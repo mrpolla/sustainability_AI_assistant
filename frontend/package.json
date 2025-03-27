@@ -1,0 +1,16 @@
+{
+  "name": "minimal-react-app",
+  "version": "1.0.0",
+  "description": "Minimal React app for XML Q&A",
+  "scripts": {
+    "start": "parcel src/index.html --open",
+    "build": "parcel build src/index.html"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "parcel": "^2.9.3"
+  }
+}
