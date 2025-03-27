@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sentence_transformers import SentenceTransformer
 import psycopg2
-import subprocess
+import requests
 import os
 from dotenv import load_dotenv
 
@@ -54,7 +54,7 @@ async def ask_question(data: QuestionRequest):
             SELECT chunk
             FROM epd_embeddings
             ORDER BY embedding <-> %s::vector
-            LIMIT 2;
+            LIMIT 5;
         """, (embedding,))
         rows = cur.fetchall()
         cur.close()
@@ -65,44 +65,39 @@ async def ask_question(data: QuestionRequest):
     if not rows:
         return JSONResponse({"answer": "No relevant data found."})
 
-    # Step 3: Build the prompt for Mistral-Instruct format
-    context = "\n\n".join([row[0] for row in rows])[:1000]  # keep it tight
-    prompt = f"""<s>[INST] You are a helpful assistant specializing in sustainable building and Environmental Product Declarations (EPDs).
-Please answer based only on the context. If the context does not contain enough information, say \"Not enough information.\"
-Do not repeat the prompt. Please answer concisely.
+    # Step 3: Build prompt (simple instruction format for Ollama)
+    context = "\n\n".join([row[0] for row in rows])
+    print(context)
+    # context = "\n\n".join([row[0] for row in rows])[:1500]
+    prompt = f"""You are a helpful assistant that only uses the provided context to answer questions.
 
 Question: {question}
 
 Context:
 {context}
-[/INST]"""
+
+Answer:"""
 
     print("[INFO] Prompt constructed.")
     print(prompt)
 
-    # Step 4: Run llama.cpp
+    # Save prompt to file for debugging
+    with open("debug_prompt.txt", "w") as f:
+        f.write(prompt)
+
+    # Step 4: Use Ollama API with phi3 model
     try:
-        result = subprocess.run(
-            [
-                "../llama.cpp/build/bin/llama-cli",
-                "-m", "../llama.cpp/models/mistral-7b-instruct-v0.1.Q4_K_M.gguf",
-                "--prompt", prompt,
-                "-n", "256",
-                "--temp", "0.7",
-                "--top-p", "0.95",
-                "--repeat_penalty", "1.2",
-            ],
-            text=True,
-            capture_output=True
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "phi3",
+                "prompt": prompt,
+                "stream": False
+            }
         )
-        # print("[DEBUG] llama.cpp stdout:\n", result.stdout)
-        # print("[DEBUG] llama.cpp stderr:\n", result.stderr)
-
-        answer = result.stdout.strip()
-
-        if "[end of text]" in answer:
-            answer = answer.split("[end of text]")[0].strip()
-        print("[INFO] Model output:", answer[:200], "..." if len(answer) > 200 else "")
+        result = response.json()
+        answer = result.get("response", "").strip()
+        print("[INFO] Ollama output:", answer[:200], "..." if len(answer) > 200 else "")
         return JSONResponse({"answer": answer})
     except Exception as e:
-        return JSONResponse({"answer": f"[LLM ERROR] {str(e)}"})
+        return JSONResponse({"answer": f"[OLLAMA ERROR] {str(e)}"})

@@ -28,7 +28,7 @@ def fetch_product_metadata():
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT p.process_id, p.name_en, p.description_en, p.reference_year,
+        SELECT p.process_id, p.uuid, p.name_en, p.description_en, p.reference_year,
                p.geo_location, p.geo_descr_en, p.tech_descr_en, p.tech_applic_en,
                p.time_repr_en, p.use_advice_de, p.use_advice_en,
                p.generator_de, p.generator_en,
@@ -44,7 +44,7 @@ def fetch_product_metadata():
     conn.close()
 
     metadata = defaultdict(lambda: {
-        "name": "", "desc": "", "year": "",
+        "uuid": "", "name": "", "desc": "", "year": "",
         "geo": "", "geo_descr": "", "tech_descr": "", "tech_applic": "",
         "time_repr": "", "use_advice_de": "", "use_advice_en": "",
         "generator_de": "", "generator_en": "",
@@ -57,7 +57,7 @@ def fetch_product_metadata():
 
     for row in rows:
         (
-            process_id, name, desc, year,
+            process_id, uuid, name, desc, year,
             geo, geo_descr, tech_descr, tech_applic, time_repr,
             use_advice_de, use_advice_en,
             generator_de, generator_en,
@@ -70,6 +70,7 @@ def fetch_product_metadata():
 
         entry = metadata[process_id]
         entry.update({
+            "uuid": uuid,
             "name": name,
             "desc": desc,
             "year": year,
@@ -176,6 +177,8 @@ def generate_chunks():
     for pid in metadata:
         m = metadata[pid]
 
+        shared_header = f"Product: {m['name']} ({m['uuid']})\n"
+
         sections = [
             ("basic_info", f"Product: {m['name']}\nYear: {m['year']}\nDescription: {m['desc']}\nClassifications: {', '.join(m['classifications'])}"),
             ("technical", f"Geo: {m['geo']} - {m['geo_descr']}\nTechnical Description: {m['tech_descr']}\nTechnical Application: {m['tech_applic']}\nTime Representation: {m['time_repr']}"),
@@ -188,12 +191,12 @@ def generate_chunks():
         ]
 
         for section, text in sections:
-            sub_chunks = split_text_to_chunks(text, CHUNK_CHAR_LIMIT)
+            sub_chunks = split_text_to_chunks(text, CHUNK_CHAR_LIMIT - len(shared_header))
             for i, chunk in enumerate(sub_chunks):
                 chunk_id = f"{pid}_{section}_{i}"
                 chunks[chunk_id] = {
                     "process_id": pid,
-                    "chunk": chunk
+                    "chunk": shared_header + chunk
                 }
 
     return chunks
