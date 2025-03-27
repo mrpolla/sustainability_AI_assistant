@@ -35,20 +35,16 @@ def create_database_and_tables():
         # === Create Embeddings Table ===
         cur.execute('''
             CREATE TABLE IF NOT EXISTS epd_embeddings (
-                process_id TEXT PRIMARY KEY,
-                uuid TEXT,
-                version TEXT,
+                chunk_id TEXT PRIMARY KEY,
+                process_id TEXT,
                 embedding VECTOR(384),
                 chunk TEXT,
-                FOREIGN KEY (process_id) REFERENCES Products (process_id)
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             );
         ''')
 
         conn.commit()
         logger.info("Embeddings tables created successfully.")
-
-        conn.commit()
-        logger.info("uuid and version parsed from process_id.")
 
     except psycopg2.Error as e:
         logger.error(f"Error creating database or tables: {e}")

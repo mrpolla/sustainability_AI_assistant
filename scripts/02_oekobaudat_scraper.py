@@ -37,8 +37,7 @@ DB_PARAMS = {
 def connect_to_db():
     """Establish connection to PostgreSQL database"""
     try:
-        conn = psycopg2.connect(**DB_PARAMS)
-        return conn
+        return psycopg2.connect(**DB_PARAMS)
     except Exception as e:
         logger.error(f"Database connection error: {e}")
         raise
@@ -47,12 +46,10 @@ def setup_driver():
     """Configure and return a Firefox webdriver"""
     # Set up Firefox options
     options = Options()
+    options.binary_location = "/snap/firefox/5917/usr/lib/firefox/firefox"  
     # Uncomment the next line to run in headless mode
     # options.add_argument('--headless')
 
-   # Specify the Firefox binary path if necessary
-    options.binary_location = "/snap/firefox/5917/usr/lib/firefox/firefox"  # Update this path if Firefox is installed elsewhere
-     
     # Set download preferences
     download_dir = os.path.join(os.getcwd(), "downloads")
     os.makedirs(download_dir, exist_ok=True)
@@ -67,10 +64,40 @@ def setup_driver():
     driver = webdriver.Firefox(options=options)
     return driver, download_dir
 
+def set_items_per_page_to_100(driver):
+    try:
+        # Locate the dropdown trigger
+        dropdown_trigger = WebDriverWait(driver, 10).until(
+           EC.presence_of_element_located((By.CSS_SELECTOR, "div.ui-dropdown-trigger.ui-state-default.ui-corner-right.ng-tns-c62-4"))
+        )
+        
+        # Scroll the dropdown trigger into view to avoid obstruction
+        driver.execute_script("arguments[0].scrollIntoView(true);", dropdown_trigger)
+        time.sleep(1)  # Allow time for scrolling
+        
+        # Click the dropdown trigger to open the menu
+        dropdown_trigger.click()
+        logger.info("Opened the items-per-page dropdown.")
+
+        # Wait for the option with label '100' to appear and click it
+        option_100 = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "//li[@aria-label='100']"))
+        )
+        option_100.click()
+        logger.info("Selected 100 items per page.")
+        
+        # Wait for page to reload
+        time.sleep(3)
+        logger.info("Set results per page to 100")
+    except Exception as e:
+        logger.error(f"Error setting results per page: {e}")
+        raise
+
 def scrape_oekobaudat(driver, download_dir):
     """Scrape data from Oekobaudat website and return collected data"""
     base_url = "https://www.oekobaudat.de/no_cache/en/database/search.html"
     collected_data = []  # List to store all collected items
+    downloaded_links = set()
 
     try:
         # Navigate to the website
@@ -80,43 +107,60 @@ def scrape_oekobaudat(driver, download_dir):
         # Wait for page to load
         time.sleep(3)
 
-        # Get all items on the current page
-        items = driver.find_elements(By.CSS_SELECTOR, "a[href*='zipexport']")
-        logger.info(f"Found {len(items)} items on the page")
-        
-        for idx, item in enumerate(items, 1):
-            if idx > 1:
-                break
-            try:
-                # Check if the item's href contains 'zipexport'
-                href = item.get_attribute("href")
-                if "zipexport" in href:
-                    logger.info(f"Downloading item {idx} from href: {href}")
-                    
-                    # Download the file directly
-                    response = requests.get(href, stream=True)
-                    if response.status_code == 200:
-                        # Save the file to the download directory
-                        file_name = f"item_{idx}.zip"
-                        file_path = os.path.join(download_dir, file_name)
-                        with open(file_path, "wb") as file:
-                            for chunk in response.iter_content(chunk_size=1024):
-                                file.write(chunk)
-                        logger.info(f"Downloaded item {idx} to {file_path}")
+        # Set items per page to 100
+        set_items_per_page_to_100(driver)
+
+        # Start scraping pages
+        page_num = 1
+        while True:
+            logger.info(f"Scraping page {page_num}")
+
+            # Get all items on the current page
+            items = driver.find_elements(By.CSS_SELECTOR, "a[href*='zipexport']")
+            logger.info(f"Found {len(items)} items on the page")
+            
+            for idx, item in enumerate(items, 1):
+                if idx > 2:
+                    break
+                try:
+                    # Check if the item's href contains 'zipexport'
+                    href = item.get_attribute("href")
+                    if "zipexport" in href and href not in downloaded_links:
+                        logger.info(f"Downloading item {idx} from href: {href}")
                         
-                        # Process the downloaded zip file and collect data
-                        item_data = process_latest_zip(download_dir)
-                        if item_data:
-                            collected_data.append(item_data)
+                        # Download the file directly
+                        response = requests.get(href, stream=True)
+                        if response.status_code == 200:
+                            # Save the file to the download directory
+                            file_name = f"item_{idx}.zip"
+                            file_path = os.path.join(download_dir, file_name)
+                            with open(file_path, "wb") as file:
+                                for chunk in response.iter_content(chunk_size=1024):
+                                    file.write(chunk)
+                            logger.info(f"Downloaded item {idx} to {file_path}")
+                            
+                            # Process the downloaded zip file and collect data
+                            item_data = process_latest_zip(download_dir)
+                            if item_data:
+                                collected_data.append(item_data)
+                            
+                            downloaded_links.add(href)
+                        else:
+                            logger.warning(f"Failed to download item {idx}. HTTP status code: {response.status_code}")
                     else:
-                        logger.warning(f"Failed to download item {idx}. HTTP status code: {response.status_code}")
-                else:
-                    logger.info(f"Skipping item {idx} as it does not contain 'zipexport'")
+                        logger.info(f"Skipping item {idx} as it does not contain 'zipexport' or already downloaded link: {href}")
+                except Exception as e:
+                    logger.error(f"Error processing item {idx}: {e}")
+                    continue
             
-            except Exception as e:
-                logger.error(f"Error processing item {idx}: {e}")
-                continue
-            
+            break
+
+            # Navigate to the next page
+            if not go_to_next_page(driver):
+                logger.info("No more pages to navigate.")
+                break
+            page_num += 1
+
     except Exception as e:
         logger.error(f"Error during scraping: {e}")
         raise
@@ -129,85 +173,30 @@ def scrape_oekobaudat(driver, download_dir):
     
     return collected_data
 
-def select_items_per_page(driver):
-    """Set the number of items per page to 100"""
+def go_to_next_page(driver):
+    """Navigate to the next page."""
     try:
-        # Find and click on the items per page dropdown
-        dropdown = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "select.items-per-page"))
+        # Locate the "Next" button
+        next_button = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "a.ui-paginator-next:not(.ui-state-disabled)"))
         )
-        dropdown.click()
         
-        # Select 100 items per page
-        option_100 = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "select.items-per-page option[value='100']"))
-        )
-        option_100.click()
+        # Scroll the "Next" button into view to avoid obstruction
+        driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
+        time.sleep(1)  # Allow time for scrolling
+
+        # Click the "Next" button using JavaScript to bypass obstruction
+        driver.execute_script("arguments[0].click();", next_button)
+        logger.info("Navigated to the next page.")
         
-        # Wait for page to reload
+        # Wait for the page to load
         time.sleep(3)
-        logger.info("Set items per page to 100")
+        return True
     except TimeoutException:
-        logger.error("Timeout while trying to set items per page")
-        raise
-
-def get_total_pages(driver):
-    """Get the total number of pages"""
-    try:
-        pagination = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "ul.pagination"))
-        )
-        
-        # Find all page links and get the highest number
-        page_links = pagination.find_elements(By.CSS_SELECTOR, "li a")
-        page_numbers = []
-        
-        for link in page_links:
-            try:
-                page_num = int(link.text.strip())
-                page_numbers.append(page_num)
-            except ValueError:
-                # Skip non-numeric links (like "Next" or "Previous")
-                continue
-        
-        if page_numbers:
-            return max(page_numbers)
-        else:
-            return 1  # Default to 1 page
-    except TimeoutException:
-        logger.error("Timeout while trying to get total pages")
-        raise
-
-def go_to_page(driver, page_num):
-    """Navigate to a specific page number"""
-    try:
-        pagination = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "ul.pagination"))
-        )
-        
-        # Find the link corresponding to the page number
-        page_links = pagination.find_elements(By.CSS_SELECTOR, "li a")
-        
-        for link in page_links:
-            if link.text.strip() == str(page_num):
-                link.click()
-                # Wait for page to load
-                time.sleep(3)
-                return
-        
-        # If we didn't find the exact page, try using Next button
-        next_buttons = pagination.find_elements(By.XPATH, "//a[contains(text(), 'Next') or contains(@aria-label, 'Next')]")
-        if next_buttons:
-            next_buttons[0].click()
-            # Wait for page to load
-            time.sleep(3)
-            # Recursive call to find the page
-            go_to_page(driver, page_num)
-        else:
-            logger.error(f"Couldn't find page {page_num}")
-            raise Exception(f"Navigation to page {page_num} failed")
-    except TimeoutException:
-        logger.error(f"Timeout while trying to navigate to page {page_num}")
+        logger.info("No more pages to navigate.")
+        return False
+    except Exception as e:
+        logger.error(f"Error navigating to the next page: {e}")
         raise
 
 def process_latest_zip(download_dir):
@@ -269,9 +258,18 @@ def parse_xml(xml_path):
             el.attrib.get('{http://www.w3.org/XML/1998/namespace}lang', 'unknown'): el.text
             for el in root.findall(xpath, namespaces)
         }
+    def get_multilang_from_elem(elem, xpath):
+        return {
+            el.attrib.get('{http://www.w3.org/XML/1998/namespace}lang', 'unknown'): el.text
+            for el in elem.findall(xpath, namespaces)
+        }
 
     def get_text(xpath):
         el = root.find(xpath, namespaces)
+        return el.text if el is not None else None
+
+    def get_text_from_elem(elem, xpath):
+        el = elem.find(xpath, namespaces)
         return el.text if el is not None else None
 
     uuid = get_text('.//common:UUID')
@@ -296,12 +294,16 @@ def parse_xml(xml_path):
 
     technology_description = get_multilang('.//process:technologyDescriptionAndIncludedProcesses')
     tech_applicability = get_multilang('.//process:technologicalApplicability')
-    tech_diagram = get_multilang('.//process:referenceToTechnologyFlowDiagrammOrPicture/common:shortDescription')
 
-    dataset_type = get_text('.//process:LCIMethodAndAllocation/typeOfDataSet')
+    dataset_type = get_text('.//process:LCIMethodAndAllocation/process:typeOfDataSet')
     dataset_subtype = get_text('.//process:LCIMethodAndAllocation/common:other/epd:subType')
 
-    sources = [el.findtext('common:shortDescription', namespaces=namespaces) for el in root.findall('.//process:dataSourcesTreatmentAndRepresentativeness/referenceToDataSource', namespaces)]
+    # Extract data sources and join them into a single string
+    sources = ', '.join([
+        el.find('common:shortDescription', namespaces).text
+        for el in root.findall('.//process:dataSourcesTreatmentAndRepresentativeness/process:referenceToDataSource', namespaces)
+    ])
+
     use_advice = get_multilang('.//process:dataSourcesTreatmentAndRepresentativeness/process:useAdviceForDataSet')
 
     reviews = []
@@ -309,15 +311,27 @@ def parse_xml(xml_path):
         reviewers = [desc.text for desc in review.findall('.//common:shortDescription', namespaces)]
         details = get_multilang('.//common:otherReviewDetails')
         reviews.append({"reviewers": reviewers, "details": details})
+    
+    # Extract multiple compliance entries
+    compliances = []
+    for compliance in root.findall('.//process:complianceDeclarations/process:compliance', namespaces):
+        # Use get_multilang to extract the compliance system descriptions
+        system = get_multilang_from_elem(compliance, './common:referenceToComplianceSystem/common:shortDescription')
 
-    compliance = {
-        'system': get_multilang('.//process:complianceDeclarations/common:referenceToComplianceSystem/common:shortDescription'),
-        'approval': get_text('.//process:complianceDeclarations/common:approvalOfOverallCompliance')
-    }
+        # Extract the approval status
+        approval = compliance.find('./common:approvalOfOverallCompliance', namespaces)
+        approval_text = approval.text if approval is not None else None
+    
+        # Append the compliance entry
+        compliances.append({'system': system, 'approval': approval_text})
 
     admin_info = {
         'generator': get_multilang('.//process:dataGenerator/common:shortDescription'),
-        'entry_by': get_multilang('.//process:dataEntryBy/common:shortDescription'),
+        'entry_by': get_multilang('.//process:dataEntryBy/common:referenceToPersonOrEntityEnteringTheData/common:shortDescription'),
+        'timestamp': get_text('.//process:dataEntryBy/common:timeStamp'),
+        'formats': [
+            el.text for el in root.findall('.//process:dataEntryBy/common:referenceToDataSetFormat/common:shortDescription', namespaces)
+        ],
         'version': get_text('.//process:publicationAndOwnership/common:dataSetVersion'),
         'license': get_text('.//process:publicationAndOwnership/common:licenseType'),
         'access': get_multilang('.//process:publicationAndOwnership/common:accessRestrictions')
@@ -331,10 +345,10 @@ def parse_xml(xml_path):
 
     exchanges = []
     for exchange in root.findall('.//process:exchange', namespaces):
-        flow = get_multilang('./process:referenceToFlowDataSet/common:shortDescription')
-        direction = get_text('./process:exchangeDirection')
-        meanAmount = get_text('./process:meanAmount')
-        unit = get_text('.//epd:referenceToUnitGroupDataSet/common:shortDescription')
+        flow = get_multilang_from_elem(exchange, './process:referenceToFlowDataSet/common:shortDescription')
+        direction = get_text_from_elem(exchange, './process:exchangeDirection')
+        meanAmount = get_text_from_elem(exchange, './process:meanAmount')
+        unit = get_text_from_elem(exchange, './/epd:referenceToUnitGroupDataSet/common:shortDescription')
 
         module_amounts = {}
         for amount in exchange.findall('.//epd:amount', namespaces):
@@ -351,9 +365,9 @@ def parse_xml(xml_path):
 
     lcia_results = []
     for lcia in root.findall('.//process:LCIAResult', namespaces):
-        method = get_multilang('./process:referenceToLCIAMethodDataSet/common:shortDescription')
-        meanAmount = get_text('./process:meanAmount')
-        unit = get_text('.//epd:referenceToUnitGroupDataSet/common:shortDescription')
+        method = get_multilang_from_elem(lcia, './process:referenceToLCIAMethodDataSet/common:shortDescription')
+        meanAmount = get_text_from_elem(lcia, './process:meanAmount')
+        unit = get_text_from_elem(lcia, './/epd:referenceToUnitGroupDataSet/common:shortDescription')
 
         module_amounts = {}
         for amount in lcia.findall('.//epd:amount', namespaces):
@@ -381,13 +395,12 @@ def parse_xml(xml_path):
         'geography': geography,
         'technology_description': technology_description,
         'tech_applicability': tech_applicability,
-        'tech_diagram': tech_diagram,
         'dataset_type': dataset_type,
         'dataset_subtype': dataset_subtype,
         'sources': sources,
         'use_advice': use_advice,
         'reviews': reviews,
-        'compliance': compliance,
+        'compliances': compliances, 
         'admin_info': admin_info,
         'exchanges': exchanges,
         'lcia_results': lcia_results
@@ -417,28 +430,37 @@ def parse_xml(xml_path):
 def store_data_in_db(collected_data, conn):
     with conn.cursor() as cursor:
         for item in collected_data:
+            # Check if the product with the given process_id already exists
+            cursor.execute('''
+                SELECT 1 FROM products WHERE process_id = %s
+            ''', (item['process_id'],))
+            exists = cursor.fetchone()
+
+            if exists:
+                logger.info(f"Product with process_id {item['process_id']} already exists. Skipping insertion.")
+                continue
+
+            # Insert the product if it does not exist
             cursor.execute('''
                 INSERT INTO products (
                     process_id, uuid, version, name_de, name_en, description_de, description_en, reference_year,
                     valid_until, time_repr_de, time_repr_en, safety_margin, safety_descr_de, safety_descr_en,
                     geo_location, geo_descr_de, geo_descr_en,
-                    tech_descr_de, tech_descr_en, tech_applic_de, tech_applic_en, tech_diagram_de, tech_diagram_en,
-                    dataset_type, dataset_subtype,
-                    source1, source2, source3,
+                    tech_descr_de, tech_descr_en, tech_applic_de, tech_applic_en,
+                    dataset_type, dataset_subtype, sources,
                     use_advice_de, use_advice_en,
-                    compliance_de, compliance_en, approval,
                     generator_de, generator_en, entry_by_de, entry_by_en,
-                    admin_version, license_type, access_de, access_en
+                    admin_version, license_type, access_de, access_en,
+                    timestamp, formats
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
                           %s, %s, %s, %s, %s, %s,
                           %s, %s, %s,
-                          %s, %s, %s, %s, %s, %s,
-                          %s, %s,
+                          %s, %s, %s, %s, 
                           %s, %s, %s,
                           %s, %s,
-                          %s, %s, %s,
                           %s, %s, %s, %s,
-                          %s, %s, %s, %s)
+                          %s, %s, %s, %s,
+                          %s, %s)
             ''', (
                 item['process_id'], item['uuid'], item['version'],
                 item['name'].get('de'), item['name'].get('en'),
@@ -451,19 +473,17 @@ def store_data_in_db(collected_data, conn):
                 item['geography']['description'].get('de'), item['geography']['description'].get('en'),
                 item['technology_description'].get('de'), item['technology_description'].get('en'),
                 item['tech_applicability'].get('de'), item['tech_applicability'].get('en'),
-                item['tech_diagram'].get('de'), item['tech_diagram'].get('en'),
-                item['dataset_type'], item['dataset_subtype'],
-                (item['sources'][0] if len(item['sources']) > 0 else None),
-                (item['sources'][1] if len(item['sources']) > 1 else None),
-                (item['sources'][2] if len(item['sources']) > 2 else None),
+                item['dataset_type'], item['dataset_subtype'], item['sources'],
                 item['use_advice'].get('de'), item['use_advice'].get('en'),
-                item['compliance']['system'].get('de'), item['compliance']['system'].get('en'), item['compliance']['approval'],
                 item['admin_info']['generator'].get('de'), item['admin_info']['generator'].get('en'),
                 item['admin_info']['entry_by'].get('de'), item['admin_info']['entry_by'].get('en'),
                 item['admin_info']['version'], item['admin_info']['license'],
-                item['admin_info']['access'].get('de'), item['admin_info']['access'].get('en')
+                item['admin_info']['access'].get('de'), item['admin_info']['access'].get('en'),
+                item['admin_info']['timestamp'],
+                ', '.join(item['admin_info']['formats'])  # Join the list of formats into a single string
             ))
 
+            # Insert related data (e.g., classifications, exchanges, LCIA results, reviews, compliances)
             for classification in item['classification']:
                 cursor.execute('''
                     INSERT INTO classifications (process_id, classification)
@@ -519,6 +539,16 @@ def store_data_in_db(collected_data, conn):
                         item['process_id'], reviewer,
                         review['details'].get('de'), review['details'].get('en')
                     ))
+
+            for compliance in item['compliances']:
+                cursor.execute('''
+                    INSERT INTO compliances (process_id, system_de, system_en, approval)
+                    VALUES (%s, %s, %s, %s)
+                ''', (
+                    item['process_id'],
+                    compliance['system'].get('de'), compliance['system'].get('en'),
+                    compliance['approval']
+                ))
 
         conn.commit()
 

@@ -3,6 +3,7 @@ import psycopg2
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from collections import defaultdict
+import textwrap
 
 # Load environment variables
 load_dotenv()
@@ -17,8 +18,8 @@ DB_PARAMS = {
 
 model = SentenceTransformer("all-MiniLM-L6-v2")  # embedding size = 384
 
-def extract_version(process_id, uuid):
-    return process_id[len(uuid) + 1:] if process_id and uuid and process_id.startswith(uuid + "_") else None
+CHUNK_CHAR_LIMIT = 1500
+
 
 def connect():
     return psycopg2.connect(**DB_PARAMS)
@@ -27,7 +28,15 @@ def fetch_product_metadata():
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT p.process_id, p.name_en, p.description_en, p.reference_year, c.classification
+        SELECT p.process_id, p.name_en, p.description_en, p.reference_year,
+               p.geo_location, p.geo_descr_en, p.tech_descr_en, p.tech_applic_en,
+               p.time_repr_en, p.use_advice_de, p.use_advice_en,
+               p.generator_de, p.generator_en,
+               p.entry_by_de, p.entry_by_en,
+               p.admin_version, p.license_type,
+               p.access_de, p.access_en,
+               p.timestamp, p.formats,
+               c.classification
         FROM products p
         LEFT JOIN classifications c ON p.process_id = c.process_id
     """)
@@ -35,14 +44,54 @@ def fetch_product_metadata():
     conn.close()
 
     metadata = defaultdict(lambda: {
-        "name": "", "desc": "", "year": "", "classifications": set()
+        "name": "", "desc": "", "year": "",
+        "geo": "", "geo_descr": "", "tech_descr": "", "tech_applic": "",
+        "time_repr": "", "use_advice_de": "", "use_advice_en": "",
+        "generator_de": "", "generator_en": "",
+        "entry_by_de": "", "entry_by_en": "",
+        "admin_version": "", "license_type": "",
+        "access_de": "", "access_en": "",
+        "timestamp": "", "formats": "",
+        "classifications": set()
     })
 
-    for process_id, name, desc, year, classification in rows:
+    for row in rows:
+        (
+            process_id, name, desc, year,
+            geo, geo_descr, tech_descr, tech_applic, time_repr,
+            use_advice_de, use_advice_en,
+            generator_de, generator_en,
+            entry_by_de, entry_by_en,
+            admin_version, license_type,
+            access_de, access_en,
+            timestamp, formats,
+            classification
+        ) = row
+
         entry = metadata[process_id]
-        entry["name"] = name
-        entry["desc"] = desc
-        entry["year"] = year
+        entry.update({
+            "name": name,
+            "desc": desc,
+            "year": year,
+            "geo": geo,
+            "geo_descr": geo_descr,
+            "tech_descr": tech_descr,
+            "tech_applic": tech_applic,
+            "time_repr": time_repr,
+            "use_advice_de": use_advice_de,
+            "use_advice_en": use_advice_en,
+            "generator_de": generator_de,
+            "generator_en": generator_en,
+            "entry_by_de": entry_by_de,
+            "entry_by_en": entry_by_en,
+            "admin_version": admin_version,
+            "license_type": license_type,
+            "access_de": access_de,
+            "access_en": access_en,
+            "timestamp": str(timestamp) if timestamp else "",
+            "formats": formats
+        })
+
         if classification:
             entry["classifications"].add(classification)
 
@@ -63,14 +112,10 @@ def fetch_exchanges():
     exchanges = defaultdict(list)
     for pid, direction, flow_en, flow_de, amt, unit, module, mod_amt in rows:
         flow = flow_en or flow_de or 'Unnamed Flow'
-        if not (flow or amt or mod_amt or module):
-            continue
         exchanges[pid].append(
             f"{direction or 'Unknown'}: {flow} | {amt if amt is not None else '–'} {unit or ''} | {module or '–'} = {mod_amt if mod_amt is not None else '–'}"
         )
     return exchanges
-
-
 
 def fetch_lcia():
     conn = connect()
@@ -87,42 +132,69 @@ def fetch_lcia():
     lcia = defaultdict(list)
     for pid, method_en, method_de, amt, unit, module, mod_amt in rows:
         method = method_en or method_de or 'Unnamed Impact'
-        if not (method or amt or mod_amt or module):
-            continue
         lcia[pid].append(
             f"{method} | {amt if amt is not None else '–'} {unit or ''} | {module or '–'} = {mod_amt if mod_amt is not None else '–'}"
         )
     return lcia
 
+def fetch_compliances():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT process_id, system_en, approval FROM compliances")
+    rows = cur.fetchall()
+    conn.close()
 
+    compliances = defaultdict(list)
+    for pid, system, approval in rows:
+        compliances[pid].append(f"{system or 'Unknown system'} - {approval or 'Unknown approval'}")
+    return compliances
+
+def fetch_reviews():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT process_id, reviewer, detail_en FROM reviews")
+    rows = cur.fetchall()
+    conn.close()
+
+    reviews = defaultdict(list)
+    for pid, reviewer, detail in rows:
+        reviews[pid].append(f"{reviewer or 'Unknown reviewer'}: {detail or 'No detail'}")
+    return reviews
+
+def split_text_to_chunks(text, chunk_size):
+    return textwrap.wrap(text, chunk_size, break_long_words=False, replace_whitespace=False)
 
 def generate_chunks():
     metadata = fetch_product_metadata()
     exchanges = fetch_exchanges()
     lcia = fetch_lcia()
+    compliances = fetch_compliances()
+    reviews = fetch_reviews()
 
     chunks = {}
 
     for pid in metadata:
-        uuid = pid.split("_")[0]
-        version = extract_version(pid, uuid)
-
         m = metadata[pid]
-        e = exchanges.get(pid, [])
-        l = lcia.get(pid, [])
 
-        text = f"""Product: {m["name"]}
-                   Year: {m["year"]}
-                   Description: {m["desc"]}
-                   Classifications: {', '.join(m["classifications"])}
-                   Exchanges:\n{chr(10).join(e)}
-                   LCIA:\n{chr(10).join(l)}"""
+        sections = [
+            ("basic_info", f"Product: {m['name']}\nYear: {m['year']}\nDescription: {m['desc']}\nClassifications: {', '.join(m['classifications'])}"),
+            ("technical", f"Geo: {m['geo']} - {m['geo_descr']}\nTechnical Description: {m['tech_descr']}\nTechnical Application: {m['tech_applic']}\nTime Representation: {m['time_repr']}"),
+            ("usage", f"Use Advice (EN): {m['use_advice_en']}\nUse Advice (DE): {m['use_advice_de']}"),
+            ("meta", f"Generator (EN): {m['generator_en']}\nGenerator (DE): {m['generator_de']}\nEntry By (EN): {m['entry_by_en']}\nEntry By (DE): {m['entry_by_de']}\nAdmin Version: {m['admin_version']}\nLicense Type: {m['license_type']}\nAccess (EN): {m['access_en']}\nAccess (DE): {m['access_de']}\nTimestamp: {m['timestamp']}\nFormats: {m['formats']}"),
+            ("compliances", "\n".join(compliances.get(pid, []))),
+            ("reviews", "\n".join(reviews.get(pid, []))),
+            ("exchanges", "\n".join(exchanges.get(pid, []))),
+            ("lcia", "\n".join(lcia.get(pid, []))),
+        ]
 
-        chunks[pid] = {
-            "uuid": uuid,
-            "version": version,
-            "chunk": text
-        }
+        for section, text in sections:
+            sub_chunks = split_text_to_chunks(text, CHUNK_CHAR_LIMIT)
+            for i, chunk in enumerate(sub_chunks):
+                chunk_id = f"{pid}_{section}_{i}"
+                chunks[chunk_id] = {
+                    "process_id": pid,
+                    "chunk": chunk
+                }
 
     return chunks
 
@@ -131,19 +203,19 @@ def insert_embeddings():
     conn = connect()
     cur = conn.cursor()
 
-    for pid, item in chunks.items():
+    for chunk_id, item in chunks.items():
         embedding = model.encode(item["chunk"]).tolist()
         cur.execute("""
-            INSERT INTO epd_embeddings (process_id, uuid, version, embedding, chunk)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (process_id) DO UPDATE
+            INSERT INTO epd_embeddings (chunk_id, process_id, embedding, chunk)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (chunk_id) DO UPDATE
             SET embedding = EXCLUDED.embedding,
                 chunk = EXCLUDED.chunk
-        """, (pid, item["uuid"], item["version"], embedding, item["chunk"]))
+        """, (chunk_id, item["process_id"], embedding, item["chunk"]))
 
     conn.commit()
     conn.close()
-    print(f"✅ Inserted/updated {len(chunks)} embeddings.")
+    print(f"✅ Inserted/updated {len(chunks)} chunks.")
 
 if __name__ == "__main__":
     insert_embeddings()

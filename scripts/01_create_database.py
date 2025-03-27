@@ -73,18 +73,11 @@ def create_database_and_tables():
                 tech_descr_en TEXT,
                 tech_applic_de TEXT,
                 tech_applic_en TEXT,
-                tech_diagram_de TEXT,
-                tech_diagram_en TEXT,
                 dataset_type TEXT,
                 dataset_subtype TEXT,
-                source1 TEXT,
-                source2 TEXT,
-                source3 TEXT,
+                sources TEXT,
                 use_advice_de TEXT,
                 use_advice_en TEXT,
-                compliance_de TEXT,
-                compliance_en TEXT,
-                approval TEXT,
                 generator_de TEXT,
                 generator_en TEXT,
                 entry_by_de TEXT,
@@ -92,7 +85,20 @@ def create_database_and_tables():
                 admin_version TEXT,
                 license_type TEXT,
                 access_de TEXT,
-                access_en TEXT
+                access_en TEXT,
+                timestamp TIMESTAMP,
+                formats TEXT
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Compliances (
+                compliance_id SERIAL PRIMARY KEY,
+                process_id TEXT,
+                system_de TEXT,
+                system_en TEXT,
+                approval TEXT,
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             )
         ''')
 
@@ -100,7 +106,7 @@ def create_database_and_tables():
             CREATE TABLE IF NOT EXISTS Classifications (
                 process_id TEXT,
                 classification TEXT,
-                FOREIGN KEY (process_id) REFERENCES Products (process_id)
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             )
         ''')
 
@@ -113,7 +119,7 @@ def create_database_and_tables():
                 direction TEXT,
                 meanAmount REAL,
                 unit TEXT,
-                FOREIGN KEY (process_id) REFERENCES Products (process_id)
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             )
         ''')
 
@@ -123,7 +129,7 @@ def create_database_and_tables():
                 exchange_id INTEGER,
                 module TEXT,
                 amount REAL,
-                FOREIGN KEY (exchange_id) REFERENCES Exchanges (exchange_id)
+                FOREIGN KEY (exchange_id) REFERENCES Exchanges (exchange_id) ON DELETE CASCADE
             )
         ''')
 
@@ -135,7 +141,7 @@ def create_database_and_tables():
                 method_en TEXT,
                 meanAmount REAL,
                 unit TEXT,
-                FOREIGN KEY (process_id) REFERENCES Products (process_id)
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             )
         ''')
 
@@ -145,7 +151,7 @@ def create_database_and_tables():
                 lcia_id INTEGER,
                 module TEXT,
                 amount REAL,
-                FOREIGN KEY (lcia_id) REFERENCES LCIA_Results (lcia_id)
+                FOREIGN KEY (lcia_id) REFERENCES LCIA_Results (lcia_id) ON DELETE CASCADE
             )
         ''')
 
@@ -156,7 +162,7 @@ def create_database_and_tables():
                 reviewer TEXT,
                 detail_de TEXT,
                 detail_en TEXT,
-                FOREIGN KEY (process_id) REFERENCES Products (process_id)
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             )
         ''')
 
