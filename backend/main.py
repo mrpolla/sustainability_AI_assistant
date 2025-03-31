@@ -1,35 +1,21 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sentence_transformers import SentenceTransformer
 import psycopg2
 import requests
 import os
+import time
 from dotenv import load_dotenv
 
-# Load env
+# Load env vars
 load_dotenv()
 
-# Model for embeddings
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-
-class QuestionRequest(BaseModel):
-    question: str
-
-# DB params
-DB_PARAMS = {
-    "host": os.getenv("DB_HOST"),
-    "dbname": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "port": os.getenv("DB_PORT")
-}
-
-# App setup
+# Initialize FastAPI
 app = FastAPI()
 
+# CORS setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,15 +24,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Request schema
+class QuestionRequest(BaseModel):
+    question: str
+
+# Load embedding model
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+# DB connection settings
+DB_PARAMS = {
+    "host": os.getenv("DB_HOST"),
+    "dbname": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "port": os.getenv("DB_PORT")
+}
+
+# Inference endpoint (replace this after launching Kaggle notebook)
+INFERENCE_API_URL = os.getenv("INFERENCE_API_URL")  
+print(f"Inference URL: {INFERENCE_API_URL}")
+
 @app.post("/ask")
 async def ask_question(data: QuestionRequest):
     question = data.question
     print(f"[INFO] Question received: {question}")
 
-    # Step 1: Embed the question
-    embedding = embedding_model.encode(question).tolist()
+    # Step 1: Create embedding
+    try:
+        embedding = embedding_model.encode(question).tolist()
+    except Exception as e:
+        return JSONResponse({"answer": f"[EMBEDDING ERROR] {str(e)}"})
 
-    # Step 2: Retrieve top 2 relevant chunks (smaller context)
+    # Step 2: Retrieve relevant context from DB
     try:
         conn = psycopg2.connect(**DB_PARAMS)
         cur = conn.cursor()
@@ -65,10 +74,8 @@ async def ask_question(data: QuestionRequest):
     if not rows:
         return JSONResponse({"answer": "No relevant data found."})
 
-    # Step 3: Build prompt (simple instruction format for Ollama)
+    # Step 3: Construct prompt
     context = "\n\n".join([row[0] for row in rows])
-    print(context)
-    # context = "\n\n".join([row[0] for row in rows])[:1500]
     prompt = f"""You are a helpful assistant that only uses the provided context to answer questions.
 
 Question: {question}
@@ -78,26 +85,28 @@ Context:
 
 Answer:"""
 
-    print("[INFO] Prompt constructed.")
+    print("[INFO] Prompt ready, sending to inference API")
     print(prompt)
 
-    # Save prompt to file for debugging
-    with open("debug_prompt.txt", "w") as f:
-        f.write(prompt)
 
-    # Step 4: Use Ollama API with phi3 model
+    # Step 4: Send prompt to inference service (Kaggle/Colab/HF)
     try:
+        start_time = time.time()
         response = requests.post(
-            "http://localhost:11434/api/generate",
+            f"{INFERENCE_API_URL}/api/generate",
             json={
-                "model": "phi3",
+                "model": "nous-hermes2",
                 "prompt": prompt,
-                "stream": False
-            }
+                "stream": False,
+                },
+            timeout=600
         )
+        endtime = time.time()
+        print(f"[INFO] Inference API response time: {endtime - start_time:.2f} seconds")
+        print("[DEBUG] Raw response text:", response.text)
         result = response.json()
-        answer = result.get("response", "").strip()
-        print("[INFO] Ollama output:", answer[:200], "..." if len(answer) > 200 else "")
+        answer = result.get("response", "No answer returned.")
+        print("[INFO] Inference result:", answer[:200], "..." if len(answer) > 200 else "")
         return JSONResponse({"answer": answer})
     except Exception as e:
-        return JSONResponse({"answer": f"[OLLAMA ERROR] {str(e)}"})
+        return JSONResponse({"answer": f"[INFERENCE ERROR] {str(e)}"})
