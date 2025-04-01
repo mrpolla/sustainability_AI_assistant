@@ -4,10 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sentence_transformers import SentenceTransformer
 import psycopg2
-import requests
 import os
-import time
 from dotenv import load_dotenv
+from llm_utils import query_llm
 
 # Load env vars
 load_dotenv()
@@ -39,10 +38,6 @@ DB_PARAMS = {
     "password": os.getenv("DB_PASSWORD"),
     "port": os.getenv("DB_PORT")
 }
-
-# Inference endpoint (replace this after launching Kaggle notebook)
-INFERENCE_API_URL = os.getenv("INFERENCE_API_URL")  
-print(f"Inference URL: {INFERENCE_API_URL}")
 
 @app.post("/ask")
 async def ask_question(data: QuestionRequest):
@@ -91,21 +86,7 @@ Answer:"""
 
     # Step 4: Send prompt to inference service (Kaggle/Colab/HF)
     try:
-        start_time = time.time()
-        response = requests.post(
-            f"{INFERENCE_API_URL}/api/generate",
-            json={
-                "model": "nous-hermes2",
-                "prompt": prompt,
-                "stream": False,
-                },
-            timeout=600
-        )
-        endtime = time.time()
-        print(f"[INFO] Inference API response time: {endtime - start_time:.2f} seconds")
-        print("[DEBUG] Raw response text:", response.text)
-        result = response.json()
-        answer = result.get("response", "No answer returned.")
+        answer = query_llm(prompt)
         print("[INFO] Inference result:", answer[:200], "..." if len(answer) > 200 else "")
         return JSONResponse({"answer": answer})
     except Exception as e:

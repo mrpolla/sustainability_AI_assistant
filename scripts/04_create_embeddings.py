@@ -173,6 +173,7 @@ def generate_chunks():
     reviews = fetch_reviews()
 
     chunks = {}
+    all_product_info = {}  # New dictionary to store concatenated information
 
     for pid in metadata:
         m = metadata[pid]
@@ -189,6 +190,11 @@ def generate_chunks():
             ("exchanges", "\n".join(exchanges.get(pid, []))),
             ("lcia", "\n".join(lcia.get(pid, []))),
         ]
+
+        all_sections_text = shared_header
+        for section, text in sections:
+            all_sections_text += f"\n\n--- {section.upper()} ---\n{text}"
+        all_product_info[pid] = all_sections_text
 
         for section, text in sections:
             sub_chunks = split_text_to_chunks(text, CHUNK_CHAR_LIMIT - len(shared_header))
