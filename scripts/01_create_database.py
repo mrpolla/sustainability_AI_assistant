@@ -108,7 +108,7 @@ def create_database_and_tables():
                 classification TEXT,
                 FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             )
-        ''')
+        ''')    
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS Exchanges (
@@ -116,6 +116,7 @@ def create_database_and_tables():
                 process_id TEXT,
                 flow_de TEXT,
                 flow_en TEXT,
+                indicator_key TEXT,
                 direction TEXT,
                 meanAmount REAL,
                 unit TEXT,
@@ -128,6 +129,7 @@ def create_database_and_tables():
                 module_amount_id SERIAL PRIMARY KEY,
                 exchange_id INTEGER,
                 module TEXT,
+                scenario TEXT,
                 amount REAL,
                 FOREIGN KEY (exchange_id) REFERENCES Exchanges (exchange_id) ON DELETE CASCADE
             )
@@ -139,6 +141,7 @@ def create_database_and_tables():
                 process_id TEXT,
                 method_de TEXT,
                 method_en TEXT,
+                indicator_key TEXT,
                 meanAmount REAL,
                 unit TEXT,
                 FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
@@ -150,6 +153,7 @@ def create_database_and_tables():
                 lcia_module_amount_id SERIAL PRIMARY KEY,
                 lcia_id INTEGER,
                 module TEXT,
+                scenario TEXT,
                 amount REAL,
                 FOREIGN KEY (lcia_id) REFERENCES LCIA_Results (lcia_id) ON DELETE CASCADE
             )

@@ -28,7 +28,7 @@ class QuestionRequest(BaseModel):
     question: str
 
 # Load embedding model
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+embedding_model = SentenceTransformer("BAAI/bge-large-en-v1.5")
 
 # DB connection settings
 DB_PARAMS = {
@@ -63,6 +63,11 @@ async def ask_question(data: QuestionRequest):
         rows = cur.fetchall()
         cur.close()
         conn.close()
+
+        # Log the retrieved chunks
+        print("[INFO] Retrieved chunks:")
+        for i, row in enumerate(rows, start=1):
+            print(f"Chunk {i}: {row[0]}")  # Print first 200 characters of each chunk
     except Exception as e:
         return JSONResponse({"answer": f"[DB ERROR] {str(e)}"})
 

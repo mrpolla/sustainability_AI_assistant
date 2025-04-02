@@ -14,7 +14,24 @@ import tempfile
 import shutil
 import logging
 from dotenv import load_dotenv
+import re
 
+target_indicators = set([
+    "PERE", "PERM", "PERT", "PENRE", "PENRM", "PENRT", "SM", "RSF", "NRSF", "FW",
+    "HWD", "NHWD", "RWD", "CRU", "MFR", "MER", "EEE", "EET",
+    "GWP-total", "GWP-biogenic", "GWP-fossil", "GWP-luluc", "ODP", "POCP",
+    "AP", "EP-terrestrial", "EP-freshwater", "EP-marine", "WDP",
+    "ADPE", "ADPF", "HTP-c", "HTP-nc", "PM", "IR", "ETP-fw", "SQP"
+])
+
+def get_indicator_key(multilang_dict):
+    if not isinstance(multilang_dict, dict):
+        return None
+    for lang_text in multilang_dict.values():
+        for key in target_indicators:
+            if re.search(rf'\b{re.escape(key)}\b', lang_text, re.IGNORECASE):
+                return key
+    return None
 
 # Load environment variables from .env file
 load_dotenv()
@@ -93,11 +110,11 @@ def set_items_per_page_to_100(driver):
         logger.error(f"Error setting results per page: {e}")
         raise
 
-def scrape_oekobaudat(driver, download_dir):
-    """Scrape data from Oekobaudat website and return collected data"""
+def download_data(driver, download_dir):
+    """Scrape data from Oekobaudat website and download files."""
     base_url = "https://www.oekobaudat.de/no_cache/en/database/search.html"
-    collected_data = []  # List to store all collected items
     downloaded_links = set()
+    global_idx = 1  # Global counter for unique filenames
 
     try:
         # Navigate to the website
@@ -119,42 +136,33 @@ def scrape_oekobaudat(driver, download_dir):
             items = driver.find_elements(By.CSS_SELECTOR, "a[href*='zipexport']")
             logger.info(f"Found {len(items)} items on the page")
             
-            for idx, item in enumerate(items, 1):
-                if idx > 2:
-                    break
+            for item in items:
                 try:
                     # Check if the item's href contains 'zipexport'
                     href = item.get_attribute("href")
                     if "zipexport" in href and href not in downloaded_links:
-                        logger.info(f"Downloading item {idx} from href: {href}")
+                        logger.info(f"Downloading item {global_idx} from href: {href}")
                         
                         # Download the file directly
                         response = requests.get(href, stream=True)
                         if response.status_code == 200:
                             # Save the file to the download directory
-                            file_name = f"item_{idx}.zip"
+                            file_name = f"item_{global_idx}.zip"
                             file_path = os.path.join(download_dir, file_name)
                             with open(file_path, "wb") as file:
                                 for chunk in response.iter_content(chunk_size=1024):
                                     file.write(chunk)
-                            logger.info(f"Downloaded item {idx} to {file_path}")
-                            
-                            # Process the downloaded zip file and collect data
-                            item_data = process_latest_zip(download_dir)
-                            if item_data:
-                                collected_data.append(item_data)
-                            
+                            logger.info(f"Downloaded item {global_idx} to {file_path}")
                             downloaded_links.add(href)
+                            global_idx += 1  # Increment the global counter
                         else:
-                            logger.warning(f"Failed to download item {idx}. HTTP status code: {response.status_code}")
+                            logger.warning(f"Failed to download item {global_idx}. HTTP status code: {response.status_code}")
                     else:
-                        logger.info(f"Skipping item {idx} as it does not contain 'zipexport' or already downloaded link: {href}")
+                        logger.info(f"Skipping item as it does not contain 'zipexport' or already downloaded link: {href}")
                 except Exception as e:
-                    logger.error(f"Error processing item {idx}: {e}")
+                    logger.error(f"Error processing item: {e}")
                     continue
             
-            break
-
             # Navigate to the next page
             if not go_to_next_page(driver):
                 logger.info("No more pages to navigate.")
@@ -164,14 +172,6 @@ def scrape_oekobaudat(driver, download_dir):
     except Exception as e:
         logger.error(f"Error during scraping: {e}")
         raise
-    finally:
-        # Clean up downloads directory
-        for file in os.listdir(download_dir):
-            file_path = os.path.join(download_dir, file)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-    
-    return collected_data
 
 def go_to_next_page(driver):
     """Navigate to the next page."""
@@ -199,19 +199,9 @@ def go_to_next_page(driver):
         logger.error(f"Error navigating to the next page: {e}")
         raise
 
-def process_latest_zip(download_dir):
-    """Process the most recently downloaded zip file and return parsed data"""
+def process_zip_file(zip_path):
+    """Process a zip file and return parsed data."""
     try:
-        # Find the latest zip file
-        zip_files = [f for f in os.listdir(download_dir) if f.endswith('.zip')]
-        if not zip_files:
-            logger.warning("No zip files found in download directory")
-            return None
-        
-        # Sort by modification time (newest first)
-        latest_zip = sorted(zip_files, key=lambda x: os.path.getmtime(os.path.join(download_dir, x)), reverse=True)[0]
-        zip_path = os.path.join(download_dir, latest_zip)
-        
         with tempfile.TemporaryDirectory() as temp_dir:
             # Extract to temporary directory
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -227,13 +217,11 @@ def process_latest_zip(download_dir):
                     # Parse XML data and return it
                     return parse_xml(xml_path)
             else:
-                logger.warning(f"No ILCD/processes directory found in {latest_zip}")
+                logger.warning(f"No ILCD/processes directory found in {zip_path}")
         
-        # Remove the processed zip file
-        os.remove(zip_path)
-    
+        return None
     except Exception as e:
-        logger.error(f"Error processing zip file: {e}")
+        logger.error(f"Error processing zip file {zip_path}: {e}")
         raise
 
 def parse_xml(xml_path):
@@ -346,6 +334,7 @@ def parse_xml(xml_path):
     exchanges = []
     for exchange in root.findall('.//process:exchange', namespaces):
         flow = get_multilang_from_elem(exchange, './process:referenceToFlowDataSet/common:shortDescription')
+        indicator_key = get_indicator_key(flow)
         direction = get_text_from_elem(exchange, './process:exchangeDirection')
         meanAmount = get_text_from_elem(exchange, './process:meanAmount')
         unit = get_text_from_elem(exchange, './/epd:referenceToUnitGroupDataSet/common:shortDescription')
@@ -353,10 +342,16 @@ def parse_xml(xml_path):
         module_amounts = {}
         for amount in exchange.findall('.//epd:amount', namespaces):
             module = amount.attrib.get('{http://www.iai.kit.edu/EPD/2013}module', '')
-            module_amounts[module] = float(amount.text) if amount.text else 0.0
+            scenario = amount.attrib.get('{http://www.iai.kit.edu/EPD/2013}scenario', '')  
+            amount_value = float(amount.text) if amount.text else 0.0
+            module_amounts[module] = {
+                'amount': amount_value,
+                'scenario': scenario
+            }
 
         exchanges.append({
             'flow': flow,
+            'indicator_key': indicator_key,
             'direction': direction,
             'meanAmount': meanAmount,
             'unit': unit,
@@ -366,16 +361,23 @@ def parse_xml(xml_path):
     lcia_results = []
     for lcia in root.findall('.//process:LCIAResult', namespaces):
         method = get_multilang_from_elem(lcia, './process:referenceToLCIAMethodDataSet/common:shortDescription')
+        indicator_key = get_indicator_key(method)
         meanAmount = get_text_from_elem(lcia, './process:meanAmount')
         unit = get_text_from_elem(lcia, './/epd:referenceToUnitGroupDataSet/common:shortDescription')
 
         module_amounts = {}
         for amount in lcia.findall('.//epd:amount', namespaces):
             module = amount.attrib.get('{http://www.iai.kit.edu/EPD/2013}module', '')
-            module_amounts[module] = float(amount.text) if amount.text else 0.0
+            scenario = amount.attrib.get('{http://www.iai.kit.edu/EPD/2013}scenario', '')  
+            amount_value = float(amount.text) if amount.text else 0.0
+            module_amounts[module] = {
+                'amount': amount_value,
+                'scenario': scenario
+            }
 
         lcia_results.append({
             'method': method,
+            'indicator_key': indicator_key,
             'meanAmount': meanAmount,
             'unit': unit,
             'module_amounts': module_amounts
@@ -406,26 +408,34 @@ def parse_xml(xml_path):
         'lcia_results': lcia_results
     }
 
+def store_data(download_dir):
+    """Process files in the downloads folder and store data in the database."""
+    conn = None
+    try:
+        conn = connect_to_db()
+        logger.info(f"Connected to database {DB_PARAMS['dbname']} on {DB_PARAMS['host']}")
 
+        # Loop through all zip files in the downloads folder
+        for file_name in os.listdir(download_dir):
+            if file_name.endswith(".zip"):
+                file_path = os.path.join(download_dir, file_name)
+                logger.info(f"Processing file: {file_path}")
+                
+                # Process the zip file and extract data
+                item_data = process_zip_file(file_path)
+                if item_data:
+                    store_data_in_db([item_data], conn)  # Store the data in the database
+                    logger.info(f"Data from {file_name} stored successfully.")
+                else:
+                    logger.warning(f"No data extracted from {file_name}. Skipping.")
 
-# def list_tables(conn):
-#     """List all tables in the current schema."""
-#     try:
-#         with conn.cursor() as cursor:
-#             cursor.execute("""
-#                 SELECT table_name
-#                 FROM information_schema.tables
-#                 WHERE table_schema = 'public'
-#                 ORDER BY table_name;
-#             """)
-#             tables = cursor.fetchall()
-#             logger.info("Tables in the database:")
-#             for table in tables:
-#                 logger.info(f"- {table[0]}")
-#             return [table[0] for table in tables]
-#     except Exception as e:
-#         logger.error(f"Error listing tables: {e}")
-#         raise
+    except Exception as e:
+        logger.error(f"Error storing data in the database: {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+            logger.info("Database connection closed.")
 
 def store_data_in_db(collected_data, conn):
     with conn.cursor() as cursor:
@@ -492,43 +502,50 @@ def store_data_in_db(collected_data, conn):
 
             for exchange in item['exchanges']:
                 cursor.execute('''
-                    INSERT INTO exchanges (process_id, flow_de, flow_en, direction, meanAmount, unit)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    INSERT INTO exchanges (process_id, flow_de, flow_en, indicator_key, direction, meanAmount, unit)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     RETURNING exchange_id
                 ''', (
                     item['process_id'],
                     exchange['flow'].get('de'),
                     exchange['flow'].get('en'),
+                    exchange['indicator_key'],
                     exchange['direction'],
                     exchange['meanAmount'],
                     exchange['unit']
                 ))
                 exchange_id = cursor.fetchone()[0]
 
-                for module, amount in exchange['module_amounts'].items():
-                    cursor.execute('''
-                        INSERT INTO exchange_moduleamounts (exchange_id, module, amount)
-                        VALUES (%s, %s, %s)
-                    ''', (exchange_id, module, amount))
+                for module, data in exchange['module_amounts'].items():
+                   scenario = data['scenario']
+                   amount = data['amount']
+                   cursor.execute('''
+                       INSERT INTO exchange_moduleamounts (exchange_id, module, scenario, amount)
+                       VALUES (%s, %s, %s, %s)
+                   ''', (exchange_id, module, scenario, amount))
 
             for lcia in item['lcia_results']:
                 cursor.execute('''
-                    INSERT INTO lcia_results (process_id, method_de, meanAmount, unit)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO lcia_results (process_id, method_de, method_en, indicator_key, meanAmount, unit)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     RETURNING lcia_id
                 ''', (
                     item['process_id'],
                     lcia['method'].get('de'),
+                    lcia['method'].get('en'),
+                    lcia['indicator_key'],
                     lcia['meanAmount'],
                     lcia['unit']
                 ))
                 lcia_id = cursor.fetchone()[0]
 
-                for module, amount in lcia['module_amounts'].items():
+                for module, data in lcia['module_amounts'].items():
+                    scenario = data['scenario']
+                    amount = data['amount']
                     cursor.execute('''
-                        INSERT INTO lcia_moduleamounts (lcia_id, module, amount)
-                        VALUES (%s, %s, %s)
-                    ''', (lcia_id, module, amount))
+                        INSERT INTO lcia_moduleamounts (lcia_id, module, scenario, amount)
+                        VALUES (%s, %s, %s, %s)
+                    ''', (lcia_id, module, scenario, amount))
 
             for review in item['reviews']:
                 for reviewer in review['reviewers']:
@@ -553,25 +570,21 @@ def store_data_in_db(collected_data, conn):
         conn.commit()
 
 def main():
-    """Main function to run the scraper"""
+    """Main function to run the scraper."""
     driver = None
-    conn = None
-    download_dir = None
+    download_dir = os.path.join(os.getcwd(), "downloads")
     
     try:
         # Set up the webdriver
-        driver, download_dir = setup_driver()
+        #driver, download_dir = setup_driver()
         logger.info("WebDriver setup complete")
         
-        # Run the scraper and collect data
-        collected_data = scrape_oekobaudat(driver, download_dir)
-        logger.info("Scraping completed successfully")
+        # Run the scraper and download files
+        #download_data(driver, download_dir)
+        logger.info("Scraping and downloading completed successfully")
         
-        # Connect to database and store data
-        conn = connect_to_db()
-        # tables = list_tables(conn)
-        logger.info(f"Connected to database {DB_PARAMS['dbname']} on {DB_PARAMS['host']}")
-        store_data_in_db(collected_data, conn)
+        # Process the downloaded files and store the data in the database
+        store_data(download_dir)
         
     except Exception as e:
         logger.error(f"Error in main function: {e}")
@@ -579,8 +592,6 @@ def main():
         # Clean up
         if driver:
             driver.quit()
-        if conn:
-            conn.close()
         logger.info("Resources cleaned up. Scraping process ended.")
 
 if __name__ == "__main__":

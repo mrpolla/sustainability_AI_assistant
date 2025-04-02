@@ -37,8 +37,9 @@ def create_database_and_tables():
             CREATE TABLE IF NOT EXISTS epd_embeddings (
                 chunk_id TEXT PRIMARY KEY,
                 process_id TEXT,
-                embedding VECTOR(384),
+                embedding VECTOR(1024),
                 chunk TEXT,
+                metadata JSONB,
                 FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             );
         ''')
