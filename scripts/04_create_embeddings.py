@@ -237,8 +237,8 @@ def generate_structured_chunks():
                 }
             }
 
-        # Step 2: LCIA chunks by module
-        module_data = defaultdict(list)
+        # Step 2: LCIA chunks
+        lcia_lines = []
         for entry in lcia.get(pid, []):
             method_en = entry["method_en"]
             method_de = entry["method_de"]
@@ -248,117 +248,51 @@ def generate_structured_chunks():
             module = entry["module"]
             scenario = entry["scenario"]
             amount = entry["amount"]
-            line = f"{method_en} | {method_de} ({indicator_key}) = {mean_amount} {unit}"
-            module_data[(module, scenario)].append(line)
+            line = f"{method_en} {method_de} ({indicator_key}) = {module} {scenario } {amount} {unit}"
+            lcia_lines.append(line)
 
-        for (module, scenario), entries in module_data.items():
-            text = f"Product: {m['name']} ({m['uuid']})\nModule: {module}"
-            if scenario:
-                text += f" (Scenario: {scenario})"
-            text += "\n" + "\n".join(entries)
-            for i, chunk in enumerate(textwrap.wrap(text.strip(), CHUNK_CHAR_LIMIT)):
-                chunk_id = f"{pid}_lcia_{module}_{i}"
+        if lcia_lines:
+            lcia_text = f"Product: {m['name']} ({m['uuid']})\nLCIA Data:\n" + "\n".join(lcia_lines)
+            for i, chunk in enumerate(textwrap.wrap(lcia_text.strip(), CHUNK_CHAR_LIMIT)):
+                chunk_id = f"{pid}_lcia_aggregated_{i}"
                 chunks[chunk_id] = {
                     "process_id": pid,
                     "chunk": chunk,
                     "metadata": {
-                        "chunk_type": "lcia_by_module",
+                        "chunk_type": "lcia",
                         "product_id": pid,
                         "product_name": m["name"],
-                        "uuid": m["uuid"],
-                        "module": module,
-                        "scenario": scenario
+                        "uuid": m["uuid"]
                     }
                 }
 
-        # Step 3: LCIA chunks by method
-        indicator_data = defaultdict(dict)
-        for entry in lcia.get(pid, []):
-            method_en = entry["method_en"]
-            method_de = entry["method_de"]
+        # Step 2: Exchanges chunks
+        exchange_lines = []
+        for entry in exchanges.get(pid, []):
+            direction = entry["direction"]
+            flow_en = entry["flow_en"]
+            flow_de = entry["flow_de"]
             indicator_key = entry["indicator_key"]
             mean_amount = entry["meanamount"]
             unit = entry["unit"]
             module = entry["module"]
             scenario = entry["scenario"]
             amount = entry["amount"]
-            indicator = f"{module}" + (f":{scenario}" if scenario else "")
-            indicator_data[indicator] = f"{amount} {unit}"
+            line = f"{direction} - {flow_en} {flow_de} {indicator_key}= {module} {scenario } {amount} {unit}"
+            exchange_lines.append(line)
 
-        for indicator, entries in indicator_data.items():
-            if indicator == None:
-                continue
-            lines = [f"{label}: {val}" for label, val in entries.items()]
-            text = f"Product: {m['name']} ({m['uuid']})\nIndicator: {indicator}\n" + "\n".join(lines)
-            for i, chunk in enumerate(textwrap.wrap(text.strip(), CHUNK_CHAR_LIMIT)):
-                chunk_id = f"{pid}_indicator_{indicator.replace(' ', '_')}_{i}"
+        if exchange_lines:
+            exchange_text = f"Product: {m['name']} ({m['uuid']})\nExchanges:\n" + "\n".join(exchange_lines)
+            for i, chunk in enumerate(textwrap.wrap(exchange_text.strip(), CHUNK_CHAR_LIMIT)):
+                chunk_id = f"{pid}_exchange_aggregated_{i}"
                 chunks[chunk_id] = {
                     "process_id": pid,
                     "chunk": chunk,
                     "metadata": {
-                        "chunk_type": "indicator_across_stages",
+                        "chunk_type": "exchanges",
                         "product_id": pid,
                         "product_name": m["name"],
-                        "uuid": m["uuid"],
-                        "indicator": indicator
-                    }
-                }
-
-        # Step 4: Exchanges by stage
-        exchange_stage_data = defaultdict(list)
-        for entry in exchanges.get(pid, []):
-            stage = entry["module"]
-            scenario = entry["scenario"]
-            line = f"{entry['flow_en']} = {entry['amount']} {entry['unit']}"
-            if scenario:
-                line += f" (Scenario: {scenario})"
-            exchange_stage_data[(stage, scenario)].append(line)
-
-        for (stage, scenario), entries in exchange_stage_data.items():
-            text = f"Product: {m['name']} ({m['uuid']})\nStage: {stage}"
-            if scenario:
-                text += f" (Scenario: {scenario})"
-            text += "\n" + "\n".join(entries)
-            for i, chunk in enumerate(textwrap.wrap(text.strip(), CHUNK_CHAR_LIMIT)):
-                chunk_id = f"{pid}_exchange_{stage}_{i}"
-                chunks[chunk_id] = {
-                    "process_id": pid,
-                    "chunk": chunk,
-                    "metadata": {
-                        "chunk_type": "exchange_by_stage",
-                        "product_id": pid,
-                        "product_name": m["name"],
-                        "uuid": m["uuid"],
-                        "stage": stage,
-                        "scenario": scenario
-                    }
-                }
-
-        # Step 5: Exchanges aggregated
-        exchange_data = defaultdict(dict)
-        for entry in exchanges.get(pid, []):
-            flow = entry["flow_en"]
-            stage = entry["module"]
-            scenario = entry["scenario"]
-            label = f"{stage}" + (f":{scenario}" if scenario else "")
-            exchange_data[flow][label] = f"{entry['amount']} {entry['unit']}"
-
-        for flow, stages in exchange_data.items():
-            if flow == None:
-                continue
-            lines = [f"{label}: {val}" for label, val in stages.items()]
-            text = f"Product: {m['name']} ({m['uuid']})\nExchange Flow: {flow}\n" + "\n".join(lines)
-            for i, chunk in enumerate(textwrap.wrap(text.strip(), CHUNK_CHAR_LIMIT)):
-                chunk_id = f"{pid}_exchange_indicator_{flow.replace(' ', '_')}_{i}"
-                chunks[chunk_id] = {
-                    "process_id": pid,
-                    "chunk": chunk,
-                    "metadata": {
-                        "chunk_type": "exchange_across_stages",
-                        "product_id": pid,
-                        "product_name": m["name"],
-                        "uuid": m["uuid"],
-                        "indicator": flow
+                        "uuid": m["uuid"]
                     }
                 }
 
