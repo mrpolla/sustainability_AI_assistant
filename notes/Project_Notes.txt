@@ -1,0 +1,54 @@
+Describe the past process:
+
+1. getting the data from one online database
+- getting it with selenium and parsing the xml
+- a lot of work but ok
+
+2. adding to my postgresql
+
+3. chunking and embedding
+
+4. downloading and building a local llm
+- adding a model from hugging_face: 4Q mistral
+
+5. creating a bare bones react webapp
+- backend in fastapi
+
+6. problems with answer: 
+chunk too big.
+- divided in smaller chunks for quantized llm
+- llm is specialized in instructions (mistral-7b-instruct-v0.1.Q4_K_M.gguf) so had to adapt prompt
+- still getting gibberish, so changed to use ollama and nous-hermes2
+
+7. Using ollama
+- it got better results from a simple question
+- could not get good results if question involved information spread between chunks
+- changed embeddings
+
+8. Benchmarked with one question in local ollama. Not clear which one is better
+
+9. Created Docker file with only ollama llm iference
+10. Uploaded DockerFile to DokcerHub
+
+11. Created Runpod from dockerfile
+
+12. Inference is taking now 8s instead of 60-300s
+
+13. Working on improving embeddings:
+- embedding chunks should overlap information or else they are too loose and disconnected
+- trying to do embeddings with SentenceTransformer("BAAI/bge-large-en-v1.5") (vector size (1024))
+
+14. System crashed. Embedding creation too resource expensive. Snap broke along with many apps (vscode, pgadmin, ....)
+Was able to salvage the code, database was not affected but had to free up a lot of space (many llm images laying around) and reinstall a few apps
+- moved to do embeddings with SentenceTransformer("BAAI/bge-small-en-v1.5") (vecotr size 384)
+
+
+
+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 - huggingface token
+
+
+
+SELECT table_schema, table_name, column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+ORDER BY table_schema, table_name, ordinal_position;

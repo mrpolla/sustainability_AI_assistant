@@ -28,7 +28,7 @@ class QuestionRequest(BaseModel):
     question: str
 
 # Load embedding model
-embedding_model = SentenceTransformer("BAAI/bge-large-en-v1.5")
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 # DB connection settings
 DB_PARAMS = {

@@ -21,8 +21,10 @@ DB_PARAMS = {
 }
 
 CHUNK_CHAR_LIMIT = 1500
-EMBEDDING_DIM = 1024  # For bge-large-en-v1.5
-model = SentenceTransformer("BAAI/bge-large-en-v1.5")
+EMBEDDING_DIM = 384  # For bge-small-en-v1.5
+model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+# EMBEDDING_DIM = 1024  # For bge-large-en-v1.5
+# model = SentenceTransformer("BAAI/bge-large-en-v1.5")
 
 def connect():
     return psycopg2.connect(**DB_PARAMS)
@@ -42,6 +44,7 @@ def fetch_product_metadata():
                c.classification
         FROM products p
         LEFT JOIN classifications c ON p.process_id = c.process_id
+        LIMIT 10
     """)
     rows = cur.fetchall()
     conn.close()
@@ -101,15 +104,24 @@ def fetch_product_metadata():
 
     return metadata
 
-def fetch_lcia():
+def sql_in_clause(ids):
+    return ','.join(['%s'] * len(ids)), tuple(ids)
+
+def fetch_lcia(pids):
+    if not pids:
+        return defaultdict(list)
+    
     conn = connect()
     cur = conn.cursor()
-    cur.execute("""
+    placeholders, args = sql_in_clause(pids)
+    query = f"""
         SELECT l.process_id, l.method_en, l.method_de, l.indicator_key, l.meanamount, l.unit,
                lma.module, lma.scenario, lma.amount
         FROM lcia_results l
         LEFT JOIN lcia_moduleamounts lma ON l.lcia_id = lma.lcia_id
-    """)
+        WHERE l.process_id IN ({placeholders})
+    """
+    cur.execute(query, args)
     lcia = defaultdict(list)
     for row in cur.fetchall():
         pid, method_en, method_de, ind_k, mean_amt, unit, module, mod_sce, mod_amt = row
@@ -127,15 +139,21 @@ def fetch_lcia():
     conn.close()
     return lcia
 
-def fetch_exchanges():
+def fetch_exchanges(pids):
+    if not pids:
+        return defaultdict(list)
+    
     conn = connect()
     cur = conn.cursor()
-    cur.execute("""
+    placeholders, args = sql_in_clause(pids)
+    query = f"""
         SELECT e.process_id, e.direction, e.flow_en, e.flow_de, e.indicator_key, e.meanamount, e.unit,
                ema.module, ema.scenario, ema.amount
         FROM exchanges e
         LEFT JOIN exchange_moduleamounts ema ON e.exchange_id = ema.exchange_id
-    """)
+        WHERE e.process_id IN ({placeholders})
+    """
+    cur.execute(query, args)
     exchanges = defaultdict(list)
     for row in cur.fetchall():
         pid, direction, flow_en, flow_de, indicator_key, meanamount, unit, module, scenario, amount = row
@@ -154,10 +172,19 @@ def fetch_exchanges():
     conn.close()
     return exchanges
 
-def fetch_compliances():
+def fetch_compliances(pids):
+    if not pids:
+        return defaultdict(list)
+    
     conn = connect()
     cur = conn.cursor()
-    cur.execute("SELECT process_id, system_en, approval FROM compliances")
+    placeholders = ','.join(['%s'] * len(pids))
+    query = f"""
+        SELECT process_id, system_en, approval
+        FROM compliances
+        WHERE process_id IN ({placeholders})
+    """
+    cur.execute(query, tuple(pids))
     rows = cur.fetchall()
     conn.close()
 
@@ -166,10 +193,19 @@ def fetch_compliances():
         compliances[pid].append(f"{system or 'Unknown system'} - {approval or 'Unknown approval'}")
     return compliances
 
-def fetch_reviews():
+def fetch_reviews(pids):
+    if not pids:
+        return defaultdict(list)
+    
     conn = connect()
     cur = conn.cursor()
-    cur.execute("SELECT process_id, reviewer, detail_en FROM reviews")
+    placeholders = ','.join(['%s'] * len(pids))
+    query = f"""
+        SELECT process_id, reviewer, detail_en
+        FROM reviews
+        WHERE process_id IN ({placeholders})
+    """
+    cur.execute(query, tuple(pids))
     rows = cur.fetchall()
     conn.close()
 
@@ -183,10 +219,10 @@ def split_text_to_chunks(text, chunk_size):
 
 def generate_structured_chunks():
     metadata = fetch_product_metadata()
-    exchanges = fetch_exchanges()
-    lcia = fetch_lcia()
-    compliances = fetch_compliances()
-    reviews = fetch_reviews()
+    exchanges = fetch_exchanges(metadata.keys())
+    lcia = fetch_lcia(metadata.keys())
+    compliances = fetch_compliances(metadata.keys())
+    reviews = fetch_reviews(metadata.keys())
 
     chunks = {}
 
@@ -312,7 +348,7 @@ def insert_embeddings(chunks, batch_size=50):
             texts = [item[1]["chunk"] for item in batch]
 
             try:
-                embeddings = model.encode(texts, batch_size=batch_size).tolist()
+                embeddings = model.encode(texts, batch_size=batch_size, show_progress_bar=True).tolist()
             except Exception as e:
                 logging.error(f"Embedding generation failed for batch {i}-{i+batch_size}: {e}")
                 continue

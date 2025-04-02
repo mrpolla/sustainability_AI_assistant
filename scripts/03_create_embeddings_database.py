@@ -19,6 +19,7 @@ DB_PARAMS = {
     'host': os.getenv("DB_HOST"),
     'port': os.getenv("DB_PORT")
 }
+EMBEDDING_DIM = 384  # For bge-small-en-v1.5
 
 def create_database_and_tables():
     """Creates the database, extensions, and tables needed for the EPD data."""
@@ -33,11 +34,11 @@ def create_database_and_tables():
         logger.info("pgvector extension enabled.")
 
         # === Create Embeddings Table ===
-        cur.execute('''
+        cur.execute(f'''
             CREATE TABLE IF NOT EXISTS epd_embeddings (
                 chunk_id TEXT PRIMARY KEY,
                 process_id TEXT,
-                embedding VECTOR(1024),
+                embedding VECTOR({EMBEDDING_DIM}),
                 chunk TEXT,
                 metadata JSONB,
                 FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE

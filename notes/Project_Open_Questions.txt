@@ -1,0 +1,14 @@
+Open questions:
+
+1. Embeddings:
+- https://chatgpt.com/c/67eb9d6d-61cc-8012-961b-dfd4261280df : should I use another database?
+- Query parsing?
+  - Use the LLM or simple regex to identify:
+  - Is it per-product? Comparison? Indicator relation?
+- Domain-agnostic model?
+  - to handle structured + semantic text well, such as:
+    - bge-large-en-v1.5 (very performant for RAG)
+    - E5-large
+    - Optionally: fine-tune on EPD-style QA pairs if retrieval isn't accurate enough
+- Rerank (optional): Use CrossEncoder (e.g., cross-encoder/ms-marco-TinyBERT-L-2-v2) if retrieval needs reranking
+- Add multilingual support (MarianMT for German ↔ English)
