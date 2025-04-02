@@ -5,6 +5,9 @@ import textwrap
 import os
 from dotenv import load_dotenv
 from psycopg2.extras import Json
+from psycopg2.extras import execute_values
+from tqdm import tqdm
+import logging
 
 # Load .env for DB credentials
 load_dotenv()
@@ -21,21 +24,91 @@ CHUNK_CHAR_LIMIT = 1500
 EMBEDDING_DIM = 1024  # For bge-large-en-v1.5
 model = SentenceTransformer("BAAI/bge-large-en-v1.5")
 
-def fetch_metadata():
-    conn = psycopg2.connect(**DB_PARAMS)
-    cur = conn.cursor()
-    cur.execute("SELECT process_id, name, uuid FROM epd_metadata")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return {pid: {"name": name, "uuid": uuid} for pid, name, uuid in rows}
+def connect():
+    return psycopg2.connect(**DB_PARAMS)
 
-def fetch_lcia():
-    conn = psycopg2.connect(**DB_PARAMS)
+def fetch_product_metadata():
+    conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT process_id, method_en, method_de, indicator_key, mean_amount, unit, stage, scenario, amount
-        FROM epd_lcia
+        SELECT p.process_id, p.uuid, p.name_en, p.description_en, p.reference_year,
+               p.geo_location, p.geo_descr_en, p.tech_descr_en, p.tech_applic_en,
+               p.time_repr_en, p.use_advice_de, p.use_advice_en,
+               p.generator_de, p.generator_en,
+               p.entry_by_de, p.entry_by_en,
+               p.admin_version, p.license_type,
+               p.access_de, p.access_en,
+               p.timestamp, p.formats,
+               c.classification
+        FROM products p
+        LEFT JOIN classifications c ON p.process_id = c.process_id
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    metadata = defaultdict(lambda: {
+        "uuid": "", "name": "", "desc": "", "year": "",
+        "geo": "", "geo_descr": "", "tech_descr": "", "tech_applic": "",
+        "time_repr": "", "use_advice_de": "", "use_advice_en": "",
+        "generator_de": "", "generator_en": "",
+        "entry_by_de": "", "entry_by_en": "",
+        "admin_version": "", "license_type": "",
+        "access_de": "", "access_en": "",
+        "timestamp": "", "formats": "",
+        "classifications": set()
+    })
+
+    for row in rows:
+        (
+            process_id, uuid, name, desc, year,
+            geo, geo_descr, tech_descr, tech_applic, time_repr,
+            use_advice_de, use_advice_en,
+            generator_de, generator_en,
+            entry_by_de, entry_by_en,
+            admin_version, license_type,
+            access_de, access_en,
+            timestamp, formats,
+            classification
+        ) = row
+
+        entry = metadata[process_id]
+        entry.update({
+            "uuid": uuid,
+            "name": name,
+            "desc": desc,
+            "year": year,
+            "geo": geo,
+            "geo_descr": geo_descr,
+            "tech_descr": tech_descr,
+            "tech_applic": tech_applic,
+            "time_repr": time_repr,
+            "use_advice_de": use_advice_de,
+            "use_advice_en": use_advice_en,
+            "generator_de": generator_de,
+            "generator_en": generator_en,
+            "entry_by_de": entry_by_de,
+            "entry_by_en": entry_by_en,
+            "admin_version": admin_version,
+            "license_type": license_type,
+            "access_de": access_de,
+            "access_en": access_en,
+            "timestamp": str(timestamp) if timestamp else "",
+            "formats": formats
+        })
+
+        if classification:
+            entry["classifications"].add(classification)
+
+    return metadata
+
+def fetch_lcia():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT l.process_id, l.method_en, l.method_de, l.indicator_key, l.meanamount, l.unit,
+               lma.module, lma.scenario, lma.amount
+        FROM lcia_results l
+        LEFT JOIN lcia_moduleamounts lma ON l.lcia_id = lma.lcia_id
     """)
     lcia = defaultdict(list)
     for row in cur.fetchall():
@@ -55,74 +128,167 @@ def fetch_lcia():
     return lcia
 
 def fetch_exchanges():
-    conn = psycopg2.connect(**DB_PARAMS)
+    conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT process_id, flow_name, unit, stage, scenario, value
-        FROM epd_exchanges
+        SELECT e.process_id, e.direction, e.flow_en, e.flow_de, e.indicator_key, e.meanamount, e.unit,
+               ema.module, ema.scenario, ema.amount
+        FROM exchanges e
+        LEFT JOIN exchange_moduleamounts ema ON e.exchange_id = ema.exchange_id
     """)
     exchanges = defaultdict(list)
     for row in cur.fetchall():
-        pid, flow, unit, stage, scenario, value = row
+        pid, direction, flow_en, flow_de, indicator_key, meanamount, unit, module, scenario, amount = row
         exchanges[pid].append({
-            "flow_en": flow,
+            "direction": direction,
+            "flow_en": flow_en,
+            "flow_de": flow_de,
+            "indicator_key": indicator_key,
+            "meanamount": meanamount,
             "unit": unit,
-            "module": stage,
+            "module": module,
             "scenario": scenario,
-            "amount": value
+            "amount": amount
         })
     cur.close()
     conn.close()
     return exchanges
 
-def generate_structured_chunks(metadata, lcia, exchanges):
+def fetch_compliances():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT process_id, system_en, approval FROM compliances")
+    rows = cur.fetchall()
+    conn.close()
+
+    compliances = defaultdict(list)
+    for pid, system, approval in rows:
+        compliances[pid].append(f"{system or 'Unknown system'} - {approval or 'Unknown approval'}")
+    return compliances
+
+def fetch_reviews():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT process_id, reviewer, detail_en FROM reviews")
+    rows = cur.fetchall()
+    conn.close()
+
+    reviews = defaultdict(list)
+    for pid, reviewer, detail in rows:
+        reviews[pid].append(f"{reviewer or 'Unknown reviewer'}: {detail or 'No detail'}")
+    return reviews
+
+def split_text_to_chunks(text, chunk_size):
+    return textwrap.wrap(text, chunk_size, break_long_words=False, replace_whitespace=False)
+
+def generate_structured_chunks():
+    metadata = fetch_product_metadata()
+    exchanges = fetch_exchanges()
+    lcia = fetch_lcia()
+    compliances = fetch_compliances()
+    reviews = fetch_reviews()
+
     chunks = {}
 
     for pid in metadata:
         m = metadata[pid]
 
-        # LCIA by stage
-        stage_data = defaultdict(list)
-        for entry in lcia.get(pid, []):
-            stage = entry["module"]
-            scenario = entry["scenario"]
-            line = f"{entry['method_en']} ({entry['indicator_key']}) = {entry['amount']} {entry['unit']}"
-            if scenario:
-                line += f" (Scenario: {scenario})"
-            stage_data[(stage, scenario)].append(line)
+        # Step 1: Basic Info
+        basic_text = f"""Product: {m['name']}
+                         Year: {m['year']}
+                         Description: {m['desc']}
+                         Classifications: {', '.join(m['classifications'])}
+             
+                         Geo: {m['geo']} - {m['geo_descr']}
+                         Technical Description: {m['tech_descr']}
+                         Technical Application: {m['tech_applic']}
+                         Time Representation: {m['time_repr']}
+             
+                         Use Advice (EN): {m['use_advice_en']}
+                         Use Advice (DE): {m['use_advice_de']}
+             
+                         Generator (EN): {m['generator_en']}
+                         Generator (DE): {m['generator_de']}
+                         Entry By (EN): {m['entry_by_en']}
+                         Entry By (DE): {m['entry_by_de']}
+                         Admin Version: {m['admin_version']}
+                         License Type: {m['license_type']}
+                         Access (EN): {m['access_en']}
+                         Access (DE): {m['access_de']}
+                         Timestamp: {m['timestamp']}
+                         Formats: {m['formats']}
+             
+                         Compliances:
+                         {chr(10).join(compliances.get(pid, []))}
+             
+                         Reviews:
+                         {chr(10).join(reviews.get(pid, []))}
+                         """
+        for i, chunk in enumerate(textwrap.wrap(basic_text.strip(), CHUNK_CHAR_LIMIT)):
+            chunk_id = f"{pid}_basic_info_{i}"
+            chunks[chunk_id] = {
+                "process_id": pid,
+                "chunk": chunk,
+                "metadata": {
+                    "chunk_type": "basic_info",
+                    "product_id": pid,
+                    "product_name": m["name"],
+                    "uuid": m["uuid"]
+                }
+            }
 
-        for (stage, scenario), entries in stage_data.items():
-            text = f"Product: {m['name']} ({m['uuid']})\nStage: {stage}"
+        # Step 2: LCIA chunks by module
+        module_data = defaultdict(list)
+        for entry in lcia.get(pid, []):
+            method_en = entry["method_en"]
+            method_de = entry["method_de"]
+            indicator_key = entry["indicator_key"]
+            mean_amount = entry["meanamount"]
+            unit = entry["unit"]
+            module = entry["module"]
+            scenario = entry["scenario"]
+            amount = entry["amount"]
+            line = f"{method_en} | {method_de} ({indicator_key}) = {mean_amount} {unit}"
+            module_data[(module, scenario)].append(line)
+
+        for (module, scenario), entries in module_data.items():
+            text = f"Product: {m['name']} ({m['uuid']})\nModule: {module}"
             if scenario:
                 text += f" (Scenario: {scenario})"
             text += "\n" + "\n".join(entries)
             for i, chunk in enumerate(textwrap.wrap(text.strip(), CHUNK_CHAR_LIMIT)):
-                chunk_id = f"{pid}_lcia_{stage}_{i}"
+                chunk_id = f"{pid}_lcia_{module}_{i}"
                 chunks[chunk_id] = {
                     "process_id": pid,
                     "chunk": chunk,
                     "metadata": {
-                        "chunk_type": "lcia_by_stage",
+                        "chunk_type": "lcia_by_module",
                         "product_id": pid,
                         "product_name": m["name"],
                         "uuid": m["uuid"],
-                        "stage": stage,
+                        "module": module,
                         "scenario": scenario
                     }
                 }
 
-        # LCIA aggregated
+        # Step 3: LCIA chunks by method
         indicator_data = defaultdict(dict)
         for entry in lcia.get(pid, []):
-            indicator = entry["indicator_key"]
+            method_en = entry["method_en"]
+            method_de = entry["method_de"]
+            indicator_key = entry["indicator_key"]
+            mean_amount = entry["meanamount"]
             unit = entry["unit"]
-            stage = entry["module"]
+            module = entry["module"]
             scenario = entry["scenario"]
-            label = f"{stage}" + (f":{scenario}" if scenario else "")
-            indicator_data[indicator][label] = f"{entry['amount']} {unit}"
+            amount = entry["amount"]
+            indicator = f"{module}" + (f":{scenario}" if scenario else "")
+            indicator_data[indicator] = f"{amount} {unit}"
 
-        for indicator, stages in indicator_data.items():
-            lines = [f"{label}: {val}" for label, val in stages.items()]
+        for indicator, entries in indicator_data.items():
+            if indicator == None:
+                continue
+            lines = [f"{label}: {val}" for label, val in entries.items()]
             text = f"Product: {m['name']} ({m['uuid']})\nIndicator: {indicator}\n" + "\n".join(lines)
             for i, chunk in enumerate(textwrap.wrap(text.strip(), CHUNK_CHAR_LIMIT)):
                 chunk_id = f"{pid}_indicator_{indicator.replace(' ', '_')}_{i}"
@@ -138,7 +304,7 @@ def generate_structured_chunks(metadata, lcia, exchanges):
                     }
                 }
 
-        # Exchanges by stage
+        # Step 4: Exchanges by stage
         exchange_stage_data = defaultdict(list)
         for entry in exchanges.get(pid, []):
             stage = entry["module"]
@@ -168,7 +334,7 @@ def generate_structured_chunks(metadata, lcia, exchanges):
                     }
                 }
 
-        # Exchanges aggregated
+        # Step 5: Exchanges aggregated
         exchange_data = defaultdict(dict)
         for entry in exchanges.get(pid, []):
             flow = entry["flow_en"]
@@ -178,6 +344,8 @@ def generate_structured_chunks(metadata, lcia, exchanges):
             exchange_data[flow][label] = f"{entry['amount']} {entry['unit']}"
 
         for flow, stages in exchange_data.items():
+            if flow == None:
+                continue
             lines = [f"{label}: {val}" for label, val in stages.items()]
             text = f"Product: {m['name']} ({m['uuid']})\nExchange Flow: {flow}\n" + "\n".join(lines)
             for i, chunk in enumerate(textwrap.wrap(text.strip(), CHUNK_CHAR_LIMIT)):
@@ -196,32 +364,58 @@ def generate_structured_chunks(metadata, lcia, exchanges):
 
     return chunks
 
-def insert_embeddings(chunks):
-    conn = psycopg2.connect(**DB_PARAMS)
-    cur = conn.cursor()
+def insert_embeddings(chunks, batch_size=50):
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    for chunk_id, data in chunks.items():
-        embedding = model.encode(data["chunk"]).tolist()
-        cur.execute("""
-            INSERT INTO epd_embeddings (chunk_id, process_id, chunk, embedding, metadata)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (chunk_id) DO NOTHING;
-        """, (
-            chunk_id,
-            data["process_id"],
-            data["chunk"],
-            embedding,
-            Json(data["metadata"])
-        ))
+    conn = None
+    try:
+        conn = psycopg2.connect(**DB_PARAMS)
+        cur = conn.cursor()
+        chunk_items = list(chunks.items())
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        for i in tqdm(range(0, len(chunk_items), batch_size), desc="Inserting Embeddings"):
+            batch = chunk_items[i:i + batch_size]
+            texts = [item[1]["chunk"] for item in batch]
+
+            try:
+                embeddings = model.encode(texts, batch_size=batch_size).tolist()
+            except Exception as e:
+                logging.error(f"Embedding generation failed for batch {i}-{i+batch_size}: {e}")
+                continue
+
+            records = []
+            for (chunk_id, data), emb in zip(batch, embeddings):
+                records.append((
+                    chunk_id,
+                    data["process_id"],
+                    data["chunk"],
+                    emb,
+                    Json(data["metadata"])
+                ))
+
+            try:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO epd_embeddings (chunk_id, process_id, chunk, embedding, metadata)
+                    VALUES %s
+                    ON CONFLICT (chunk_id) DO NOTHING;
+                    """,
+                    records
+                )
+            except Exception as e:
+                logging.error(f"DB batch insert failed for batch {i}-{i+batch_size}: {e}")
+
+        conn.commit()
+        logging.info("All batches inserted successfully.")
+
+    except Exception as e:
+        logging.critical(f"Database connection or outer loop failed: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 # Main execution
 if __name__ == "__main__":
-    metadata = fetch_metadata()
-    lcia = fetch_lcia()
-    exchanges = fetch_exchanges()
-    chunks = generate_structured_chunks(metadata, lcia, exchanges)
+    chunks = generate_structured_chunks()
     insert_embeddings(chunks)
