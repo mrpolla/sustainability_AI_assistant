@@ -1,0 +1,42 @@
+1. only GWP
+- then
+
+Einheit:
+***Dichte (in Dichte (densisty)): Angaben to GWP refeernce in this unit
+***Reference flow(s)
+kg/m3
+g/cm3
+    schlussgeglühtes Elektroband
+    - 1000.0 * 1.0 kg (Mass)
+Some have it in the name
+1m32
+200mm distance
+Material properties of the reference flow
+
+        conversion factor to 1kg: 0.001 -
+
+Indicator is imporant in comparison to reference flow!!
+
+
+2. Energie
+input + output
+3. Wasser
+...
+
+3. Input:
+- Tabelle
+
+**Why I don't find some??
+Compare 2 links
+Maybe other database
+Maybe A1-A3, lifecycle
+
+ND??
+***- 0 or no information is important
+  - empty by no information
+  - 0 by 0
+-
+- Energie rückgewinnung ir verbrannt
+- recycling
+
+

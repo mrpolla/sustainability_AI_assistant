@@ -43,6 +43,16 @@ Was able to salvage the code, database was not affected but had to free up a lot
 - moved to do embeddings with SentenceTransformer("BAAI/bge-small-en-v1.5") (vecotr size 384)
 
 
+--------------------
+15. To check sentence transformer:
+https://huggingface.co/spaces/mteb/leaderboard
+15. For now, decided to use RAG only, not fine tune. I would need much more information.
+16. Include ISO PDFs and books for
+
+17. How frontend should look like
+https://lovable.dev/projects/0c3fff77-1cff-40f9-a03c-464335e41533
+https://preview--eco-component-compass.lovable.app/
+
 
 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 - huggingface token
 

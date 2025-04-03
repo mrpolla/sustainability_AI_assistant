@@ -43,7 +43,7 @@ function App() {
       </button>
       <div style={{ marginTop: "2rem" }}>
         <strong>Answer:</strong>
-        <p>{answer}</p>
+        <pre>{answer}</pre>
       </div>
     </div>
   );

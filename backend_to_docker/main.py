@@ -5,8 +5,20 @@ from fastapi.responses import JSONResponse
 from sentence_transformers import SentenceTransformer
 import psycopg2
 import os
+import logging
 from dotenv import load_dotenv
 from llm_utils import query_llm
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("app.log"),
+        logging.StreamHandler()  # keep console output too
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Load env vars
 load_dotenv()
@@ -48,6 +60,7 @@ async def ask_question(data: QuestionRequest):
     try:
         embedding = embedding_model.encode(question).tolist()
     except Exception as e:
+        logger.exception("Error during embedding")
         return JSONResponse({"answer": f"[EMBEDDING ERROR] {str(e)}"})
 
     # Step 2: Retrieve relevant context from DB
@@ -64,15 +77,17 @@ async def ask_question(data: QuestionRequest):
         cur.close()
         conn.close()
 
-        # Log the retrieved chunks
-        print("[INFO] Retrieved chunks:")
-        for i, row in enumerate(rows, start=1):
-            print(f"Chunk {i}: {row[0]}")  # Print first 200 characters of each chunk
-    except Exception as e:
-        return JSONResponse({"answer": f"[DB ERROR] {str(e)}"})
+        if not rows:
+            logger.warning("No relevant chunks found.")
+            return JSONResponse({"answer": "No relevant data found."})
 
-    if not rows:
-        return JSONResponse({"answer": "No relevant data found."})
+        logger.info(f"Retrieved {len(rows)} chunks")
+        for i, row in enumerate(rows, start=1):
+            logger.info(f"Chunk {i}: {row[0]}")
+
+    except Exception as e:
+        logger.exception("Database error")
+        return JSONResponse({"answer": f"[DB ERROR] {str(e)}"})
 
     # Step 3: Construct prompt
     context = "\n\n".join([row[0] for row in rows])
@@ -85,14 +100,13 @@ Context:
 
 Answer:"""
 
-    print("[INFO] Prompt ready, sending to inference API")
-    print(prompt)
-
+    logger.info("Prompt constructed. Sending to inference...")
 
     # Step 4: Send prompt to inference service (Kaggle/Colab/HF)
     try:
         answer = query_llm(prompt)
-        print("[INFO] Inference result:", answer[:200], "..." if len(answer) > 200 else "")
+        logger.info("LLM returned result.")
         return JSONResponse({"answer": answer})
     except Exception as e:
+        logger.exception("Inference failed")
         return JSONResponse({"answer": f"[INFERENCE ERROR] {str(e)}"})

@@ -325,14 +325,26 @@ def parse_xml(xml_path):
         'access': get_multilang('.//process:publicationAndOwnership/common:accessRestrictions')
     }
 
-    classification = []
-    for c in root.findall('.//common:classificationInformation/common:classification', namespaces):
-        sys = c.attrib.get('name', '')
-        levels = [f"{cl.attrib.get('level', '')}:{cl.text}" for cl in c.findall('./common:class', namespaces)]
-        classification.append(f"{sys}:{'|'.join(levels)}")
+    classifications = []
+    for c in root.findall('.//process:classificationInformation/common:classification', namespaces):
+        classification_name = c.attrib.get('name', '')
+        classification_levels = c.findall('./common:class', namespaces)
+        for cl in classification_levels:
+            level = cl.attrib['level'] = cl.attrib.get('level', '')
+            classId = cl.attrib['classId'] = cl.attrib.get('classId', '')
+            level_text = cl.text
+            classifications.append({
+                'name': classification_name,
+                'level': level,
+                'classId': classId,
+                'classification': level_text
+            })
 
     exchanges = []
     for exchange in root.findall('.//process:exchange', namespaces):
+        data_set_internal_id = exchange.attrib.get('dataSetInternalID')
+        reference_to_flow = exchange.find('.//process:referenceToFlowDataSet', namespaces)
+        uri = reference_to_flow.attrib.get('uri')
         flow = get_multilang_from_elem(exchange, './process:referenceToFlowDataSet/common:shortDescription')
         indicator_key = get_indicator_key(flow)
         direction = get_text_from_elem(exchange, './process:exchangeDirection')
@@ -343,13 +355,16 @@ def parse_xml(xml_path):
         for amount in exchange.findall('.//epd:amount', namespaces):
             module = amount.attrib.get('{http://www.iai.kit.edu/EPD/2013}module', '')
             scenario = amount.attrib.get('{http://www.iai.kit.edu/EPD/2013}scenario', '')  
-            amount_value = float(amount.text) if amount.text else 0.0
+            amount_value = float(amount.text) if amount.text else None
             module_amounts[module] = {
                 'amount': amount_value,
                 'scenario': scenario
             }
 
         exchanges.append({
+            'data_set_internal_id' : data_set_internal_id,
+            'reference_to_flow': reference_to_flow,
+            'uri': uri,
             'flow': flow,
             'indicator_key': indicator_key,
             'direction': direction,
@@ -369,7 +384,7 @@ def parse_xml(xml_path):
         for amount in lcia.findall('.//epd:amount', namespaces):
             module = amount.attrib.get('{http://www.iai.kit.edu/EPD/2013}module', '')
             scenario = amount.attrib.get('{http://www.iai.kit.edu/EPD/2013}scenario', '')  
-            amount_value = float(amount.text) if amount.text else 0.0
+            amount_value = float(amount.text) if amount.text else None
             module_amounts[module] = {
                 'amount': amount_value,
                 'scenario': scenario
@@ -383,13 +398,51 @@ def parse_xml(xml_path):
             'module_amounts': module_amounts
         })
 
+
+    # Extract the referenceToReferenceFlow ID
+    reference_flow_id = root.find('.//process:quantitativeReference/process:referenceToReferenceFlow', namespaces).text
+
+
+    materials = []
+    for exchange in exchanges:
+        if exchange['data_set_internal_id'] == reference_flow_id:
+            uri = exchange['uri']
+            if uri:
+                base_uri = os.path.splitext(uri)[0]  # Remove the .xml extension
+                final_uri = f"{base_uri}_{version}.xml"  # Append the version with an underscore and add .xml
+                # Locate the referenced XML file
+                parent_folder = os.path.dirname(xml_path)
+                referenced_file_path = os.path.join(parent_folder, final_uri)
+                if os.path.exists(referenced_file_path):
+                    # Parse the referenced XML file
+                    referenced_tree = ET.parse(referenced_file_path)
+                    referenced_root = referenced_tree.getroot()
+
+                    # Extract PropertyData and PropertyDetails
+                    material_data = {}
+                    for property_data in referenced_root.findall('.//mm:PropertyData', namespaces={'mm': 'http://www.matml.org/'}):
+                        property_id = property_data.attrib.get('property')
+                        data_value = property_data.find('./mm:Data', namespaces={'mm': 'http://www.matml.org/'}).text
+                        material_data[property_id] = {'value': data_value}
+
+                    for property_details in referenced_root.findall('.//mm:PropertyDetails', namespaces={'mm': 'http://www.matml.org/'}):
+                        property_id = property_details.attrib.get('id')
+                        if property_id in material_data:
+                            material_data[property_id].update({
+                                'name': property_details.find('./mm:Name', namespaces={'mm': 'http://www.matml.org/'}).text,
+                                'units': property_details.find('./mm:Units', namespaces={'mm': 'http://www.matml.org/'}).attrib.get('name'),
+                                'description': property_details.find('./mm:Units', namespaces={'mm': 'http://www.matml.org/'}).attrib.get('description')
+                            })
+
+                    materials.append(material_data)
+
     return {
         'process_id': process_id,
         'uuid': uuid,
         'version': version,
         'name': name,
         'description': comment,
-        'classification': classification,
+        'classifications': classifications,
         'reference_year': reference_year,
         'valid_until': valid_until,
         'time_representativeness': time_representativeness,
@@ -405,7 +458,8 @@ def parse_xml(xml_path):
         'compliances': compliances, 
         'admin_info': admin_info,
         'exchanges': exchanges,
-        'lcia_results': lcia_results
+        'lcia_results': lcia_results,
+        'materials': materials
     }
 
 def store_data(download_dir):
@@ -415,6 +469,9 @@ def store_data(download_dir):
         conn = connect_to_db()
         logger.info(f"Connected to database {DB_PARAMS['dbname']} on {DB_PARAMS['host']}")
 
+        # Counter to track the number of files processed
+        file_count = 0
+    
         # Loop through all zip files in the downloads folder
         for file_name in os.listdir(download_dir):
             if file_name.endswith(".zip"):
@@ -428,6 +485,14 @@ def store_data(download_dir):
                     logger.info(f"Data from {file_name} stored successfully.")
                 else:
                     logger.warning(f"No data extracted from {file_name}. Skipping.")
+
+                # Increment the file counter
+                file_count += 1
+
+                # Stop processing after 50 files
+                if file_count >= 50:
+                    logger.info("Processed 50 files. Stopping further processing.")
+                    break                
 
     except Exception as e:
         logger.error(f"Error storing data in the database: {e}")
@@ -494,11 +559,11 @@ def store_data_in_db(collected_data, conn):
             ))
 
             # Insert related data (e.g., classifications, exchanges, LCIA results, reviews, compliances)
-            for classification in item['classification']:
+            for classification in item['classifications']:
                 cursor.execute('''
-                    INSERT INTO classifications (process_id, classification)
-                    VALUES (%s, %s)
-                ''', (item['process_id'], classification))
+                    INSERT INTO classifications (process_id, name, level, classId, classification)
+                    VALUES (%s, %s, %s, %s, %s)
+                ''', (item['process_id'], classification['name'], classification['level'], classification['classId'], classification['classification']))
 
             for exchange in item['exchanges']:
                 cursor.execute('''
@@ -567,6 +632,20 @@ def store_data_in_db(collected_data, conn):
                     compliance['approval']
                 ))
 
+            for material in item['materials']:
+                for property_id, property_data in material.items():
+                    cursor.execute('''
+                        INSERT INTO materials (process_id, property_id, property_name, value, units, description)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    ''', (
+                        item['process_id'],
+                        property_id,
+                        property_data.get('name'),
+                        property_data.get('value'),
+                        property_data.get('units'),
+                        property_data.get('description')
+                    ))
+                    
         conn.commit()
 
 def main():

@@ -41,7 +41,8 @@ def fetch_product_metadata():
                p.admin_version, p.license_type,
                p.access_de, p.access_en,
                p.timestamp, p.formats,
-               c.classification
+               c.name AS classification_name, c.level AS classification_level,
+               c.classId AS classification_class_id, c.classification AS classification_classification
         FROM products p
         LEFT JOIN classifications c ON p.process_id = c.process_id
         LIMIT 10
@@ -58,7 +59,7 @@ def fetch_product_metadata():
         "admin_version": "", "license_type": "",
         "access_de": "", "access_en": "",
         "timestamp": "", "formats": "",
-        "classifications": set()
+        "classifications": []
     })
 
     for row in rows:
@@ -71,8 +72,8 @@ def fetch_product_metadata():
             admin_version, license_type,
             access_de, access_en,
             timestamp, formats,
-            classification
-        ) = row
+            classification_name, classification_level, classification_class_id, classification_classification,
+         ) = row
 
         entry = metadata[process_id]
         entry.update({
@@ -99,8 +100,13 @@ def fetch_product_metadata():
             "formats": formats
         })
 
-        if classification:
-            entry["classifications"].add(classification)
+        if classification_name or classification_level or classification_class_id or classification_classification:
+            entry["classifications"].append({
+                "name": classification_name,
+                "level": classification_level,
+                "classId": classification_class_id,
+                "classification": classification_classification
+            })
 
     return metadata
 
@@ -214,6 +220,39 @@ def fetch_reviews(pids):
         reviews[pid].append(f"{reviewer or 'Unknown reviewer'}: {detail or 'No detail'}")
     return reviews
 
+def fetch_materials(pids):
+    """Fetch materials for the given process IDs."""
+    if not pids:
+        return defaultdict(list)
+
+    conn = connect()
+    cur = conn.cursor()
+
+    # Prepare the SQL query with placeholders for process IDs
+    placeholders, args = sql_in_clause(pids)
+    query = f"""
+        SELECT process_id, property_id, property_name, value, units, description
+        FROM materials
+        WHERE process_id IN ({placeholders})
+    """
+    cur.execute(query, args)
+
+    # Organize the results into a dictionary
+    materials = defaultdict(list)
+    for row in cur.fetchall():
+        process_id, property_id, property_name, value, units, description = row
+        materials[process_id].append({
+            "property_id": property_id,
+            "property_name": property_name,
+            "value": value,
+            "units": units,
+            "description": description
+        })
+
+    cur.close()
+    conn.close()
+    return materials
+
 def split_text_to_chunks(text, chunk_size):
     return textwrap.wrap(text, chunk_size, break_long_words=False, replace_whitespace=False)
 
@@ -223,18 +262,21 @@ def generate_structured_chunks():
     lcia = fetch_lcia(metadata.keys())
     compliances = fetch_compliances(metadata.keys())
     reviews = fetch_reviews(metadata.keys())
+    materials = fetch_materials(metadata.keys())
 
     chunks = {}
 
     for pid in metadata:
         m = metadata[pid]
+        m["materials"] = materials.get(pid, [])  # Add materials to metadata
 
         # Step 1: Basic Info
         basic_text = f"""Product: {m['name']}
                          Year: {m['year']}
                          Description: {m['desc']}
-                         Classifications: {', '.join(m['classifications'])}
-             
+                         
+                         Classifications: {', '.join([f"level: {classification['level']} classification: {classification['classification']}" for classification in m['classifications'] if 'name' in classification and 'level' in classification and 'classification' in classification])}
+                 
                          Geo: {m['geo']} - {m['geo_descr']}
                          Technical Description: {m['tech_descr']}
                          Technical Application: {m['tech_applic']}
@@ -254,6 +296,9 @@ def generate_structured_chunks():
                          Timestamp: {m['timestamp']}
                          Formats: {m['formats']}
              
+                         Material properties:
+                         {chr(10).join([f"Name: {material['property_name']}, Value: {material['value']}, Units: {material['units']}, Description: {material['description']}" for material in m.get('materials', [])])}
+
                          Compliances:
                          {chr(10).join(compliances.get(pid, []))}
              

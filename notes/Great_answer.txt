@@ -1,0 +1,39 @@
+What are sliding doors:
+            ORDER BY embedding <#> %s::vector
+Answer:
+
+ The data provided appears to be a Life Cycle Assessment (LCA) of an Automatic Sliding Door 50 for the year 2021. Here are some key points from the data:
+
+- Classification: Components and products > Doors, gates, shutters and windows > Automatic sliding door
+- Year: 2021
+- Geography: Germany
+- Environmental product declaration (EPD): Yes
+- LCA compliance: ISO 14040 and ISO 14044
+
+Materials used in the production of the door include:
+
+- Steel: 52.7 kg CO2 eq (GWP)
+- Aluminum: 23.9 kg CO2 eq (GWP)
+- Other materials: 46.4 kg CO2 eq (GWP)
+
+Energy consumption during production is broken down as follows:
+
+- Fossil energy: 105 MJ (87.6% of total energy)
+- Renewable energy: 0 MJ (0% of total energy)
+- Other: 16 MJ (12.4% of total energy)
+
+The door has the following emissions for the entire life cycle:
+
+- Global Warming Potential (GWP): 568.9 kg CO2 eq
+- Acidification potential: 3.7 kg SO2 eq
+- Photochemical ozone creation potential: 0.14 kg C2H4 eq
+
+It is important to note that the door's GWP emissions from fossil fuels are higher than its overall GWP emissions (507.255 kg CO2 eq vs. 568.9 kg CO2 eq).
+
+Regarding energy exports, neither electrical nor thermal energy is exported for this product.
+
+The data also includes several other environmental indicators, such as water consumption, eutrophication potential, and particulate matter formation potential, but those are not included in the summary provided here.
+
+Overall, this LCA suggests that the Automatic Sliding Door 50 has a moderate environmental impact, primarily due to its production processes, which rely on fossil fuels for energy. It is important to continue investigating ways to reduce the environmental footprint of these products through more sustainable materials and production methods.
+
+

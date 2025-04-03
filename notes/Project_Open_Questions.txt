@@ -12,3 +12,6 @@ Open questions:
     - Optionally: fine-tune on EPD-style QA pairs if retrieval isn't accurate enough
 - Rerank (optional): Use CrossEncoder (e.g., cross-encoder/ms-marco-TinyBERT-L-2-v2) if retrieval needs reranking
 - Add multilingual support (MarianMT for German ↔ English)
+
+
+2. How to train? Should I train/fine-tune?

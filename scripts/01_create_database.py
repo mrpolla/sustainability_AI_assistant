@@ -105,6 +105,9 @@ def create_database_and_tables():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS Classifications (
                 process_id TEXT,
+                name TEXT,
+                level TEXT,
+                classId TEXT,
                 classification TEXT,
                 FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             )
@@ -166,6 +169,19 @@ def create_database_and_tables():
                 reviewer TEXT,
                 detail_de TEXT,
                 detail_en TEXT,
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Materials (
+                material_id SERIAL PRIMARY KEY,
+                process_id TEXT,
+                property_id TEXT,
+                property_name TEXT,
+                value REAL,
+                units TEXT,
+                description TEXT,
                 FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             )
         ''')

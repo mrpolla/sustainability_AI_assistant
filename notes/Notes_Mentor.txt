@@ -1,0 +1,44 @@
+Today's notes:
+1. LLM RAG:
+- ISOs and books
+
+
+2. Make use case frontend.
+See https://chatgpt.com/c/67ee4184-9cf4-8012-928f-f2affc081d5c
+
+3. Retrieval of components:
+- by database query?
+  - I need to categorize components somehow
+- by RAG? how to get "all" of certain types
+  - can I make 2 calls to llm? just to know "what to search" and then "get relevant results"?
+
+Chunk
+
+Embedding:
+https://huggingface.co/spaces/mteb/leaderboard
+BAAI/bge-small-en-v1.5
+BAAI/bge-small-en-v1.5
+gecko
+embedenglishv3
+textembedding ada
+mpnetbase
+
+gridsearch / bayesian optimization
+
+
+To try:
+* maybe 10 embeeginds
+wrong products
+
+how to measure simliarty:
+* nearest enighoub, scalar, distance, cosine distance, ....
+
+* exchangeable models,
+- different chunks,
+- different embeddings
+- gound truth approach!! prompt + expected answer!!
+  - do on chat GTP
+  - 10 perfect examples! (on user wishes from yesterday)
+* -scale the values: inform the model
+*   - range of parameters!!
+
