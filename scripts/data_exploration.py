@@ -10,6 +10,7 @@ from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl import Workbook
 from PIL import Image
 
 # === Load DB Credentials from .env ===
@@ -55,10 +56,9 @@ def unit_conversion_factor(unit):
 def fetch_lcia_module_amounts():
     query = """
         SELECT lr.method_en, lr.indicator_key, lr.unit, lma.module, lma.amount,
-               lr.process_id, c.classification
+               lr.process_id
         FROM lcia_results lr
         JOIN lcia_moduleamounts lma ON lr.lcia_id = lma.lcia_id
-        LEFT JOIN classifications c ON lr.process_id = c.process_id AND c.level = '2'
         WHERE lma.amount IS NOT NULL
     """
     with connect() as conn:
@@ -67,20 +67,10 @@ def fetch_lcia_module_amounts():
 def fetch_exchange_module_amounts():
     query = """
         SELECT e.flow_en, e.indicator_key, e.direction, e.unit, ema.module, ema.amount,
-               e.process_id, c.classification
+               e.process_id
         FROM exchanges e
         JOIN exchange_moduleamounts ema ON e.exchange_id = ema.exchange_id
-        LEFT JOIN classifications c ON e.process_id = c.process_id AND c.level = '2'
         WHERE ema.amount IS NOT NULL
-    """
-    with connect() as conn:
-        return pd.read_sql(query, conn)
-
-def fetch_all_classifications():
-    query = """
-        SELECT process_id, level, classification 
-        FROM classifications
-        WHERE level IN ('0', '1', '2')
     """
     with connect() as conn:
         return pd.read_sql(query, conn)
@@ -122,13 +112,10 @@ def prepare_exchanges(df):
     df["source"] = "Exchange"
     return normalize_units_with_metadata(df, ["indicator_key"])
 
-def summarize_combined(df):
-    # Fix: Reorder columns according to requirements
-    grouped = df.groupby(["indicator_key", "source"])
-    stats = grouped.agg(
-        name=("name", "first"),
+def summarize_by_module(df):
+    module_summary = df.groupby(["indicator_key", "name", "module"]).agg(
         count=("normalized_amount", "count"),
-        original_units=("original_unit", lambda x: ", ".join(sorted(set(x.dropna())))),
+        original_unit=("original_unit", lambda x: ", ".join(sorted(set(x.dropna())))),
         common_unit=("common_unit", "first"),
         mean=("normalized_amount", "mean"),
         std=("normalized_amount", "std"),
@@ -136,321 +123,196 @@ def summarize_combined(df):
         max=("normalized_amount", "max"),
         median=("normalized_amount", "median")
     ).reset_index()
-    
-    # Reorder columns as requested
-    cols = ["indicator_key", "source", "name", "count", "original_units", "common_unit", 
-            "mean", "std", "min", "max", "median"]
-    return stats[cols]
+    module_summary["indicator"] = module_summary["indicator_key"]
+    return module_summary[["indicator", "name", "module", "count", "original_unit", "common_unit", "mean", "std", "min", "max", "median"]]
 
-def detect_outliers(df, all_classifications):
-    """
-    Enhanced outlier detection with detailed reasons
-    """
-    # Final result dataframe with specified columns
-    result_columns = ["process_id", "indicator_key", "mean", "unit", "range_min", "range_max", 
-                      "amount", "comment"]
-    outliers_result = pd.DataFrame(columns=result_columns)
-    
-    # Get classifications for analysis
-    classifications_by_pid = {}
-    if not all_classifications.empty:
-        for _, row in all_classifications.iterrows():
-            pid = row['process_id']
-            level = row['level']
-            classification = row['classification']
-            if pid not in classifications_by_pid:
-                classifications_by_pid[pid] = {}
-            classifications_by_pid[pid][f'level_{level}'] = classification
-    
-    # Process each indicator separately
-    for indicator_key, indicator_group in df.groupby("indicator_key"):
-        if indicator_group["normalized_amount"].isna().all() or len(indicator_group) < 5:
+def detect_outliers(df):
+    outliers_result = []
+    for (key, mod), subdf in df.groupby(["indicator_key", "module"]):
+        if len(subdf) < 5:
             continue
-            
-        # Basic statistics for this indicator
-        mean_value = indicator_group["normalized_amount"].mean()
-        std_value = indicator_group["normalized_amount"].std()
-        q1 = indicator_group["normalized_amount"].quantile(0.25)
-        q3 = indicator_group["normalized_amount"].quantile(0.75)
+        q1 = subdf["normalized_amount"].quantile(0.25)
+        q3 = subdf["normalized_amount"].quantile(0.75)
         iqr = q3 - q1
-        lower_bound = q1 - 1.5 * iqr
-        upper_bound = q3 + 1.5 * iqr
-        
-        # Find outliers
-        outliers = indicator_group[(indicator_group["normalized_amount"] < lower_bound) | 
-                                  (indicator_group["normalized_amount"] > upper_bound)]
-        
-        if outliers.empty:
-            continue
-            
-        # Classification statistics - calculate means by classification if possible
-        class_means = {}
-        for level in ['0', '1', '2']:
-            level_col = f'level_{level}'
-            if any(level_col in pid_data for pid_data in classifications_by_pid.values()):
-                # Add classification to data
-                temp_df = indicator_group.copy()
-                temp_df[level_col] = temp_df['process_id'].apply(
-                    lambda pid: classifications_by_pid.get(pid, {}).get(level_col, "Unknown")
-                )
-                
-                # Calculate means by classification
-                class_stats = temp_df.groupby(level_col)['normalized_amount'].mean().to_dict()
-                class_means[level] = class_stats
-        
-        # For each outlier, add detailed analysis
-        for _, outlier in outliers.iterrows():
-            pid = outlier['process_id']
-            amount = outlier['normalized_amount']
-            unit = outlier['common_unit']
-            
-            # Generate comment with reason
-            comment_parts = []
-            
-            # Check if extreme outlier (more than 3 IQRs from Q1/Q3)
-            extreme_lower = q1 - 3 * iqr
-            extreme_upper = q3 + 3 * iqr
-            
-            if amount < extreme_lower:
-                comment_parts.append("Extreme low outlier")
-            elif amount < lower_bound:
-                comment_parts.append("Low outlier")
-            elif amount > extreme_upper:
-                comment_parts.append("Extreme high outlier")
-            elif amount > upper_bound:
-                comment_parts.append("High outlier")
-                
-            # Check deviation from mean
-            std_deviations = abs(amount - mean_value) / std_value if std_value else 0
-            if std_deviations > 3:
-                comment_parts.append(f"{std_deviations:.1f}σ from mean")
-                
-            # Check unit inconsistency possibility
-            original_unit = outlier['original_unit']
-            if "," in indicator_group['original_unit'].str.cat(sep=','):
-                comment_parts.append(f"Possible unit inconsistency (using {original_unit})")
-                
-            # Check classification-based insights
-            pid_classifications = classifications_by_pid.get(pid, {})
-            for level, class_stats in class_means.items():
-                classification = pid_classifications.get(f'level_{level}', "Unknown")
-                if classification in class_stats:
-                    class_mean = class_stats[classification]
-                    if class_mean != 0 and amount != 0:
-                        ratio = amount / class_mean
-                        if ratio > 5 or ratio < 0.2:
-                            comment_parts.append(
-                                f"Unusual for {classification} (L{level}) classification "
-                                f"(avg: {class_mean:.2e})"
-                            )
-            
-            # If no specific reasons found
-            if not comment_parts:
-                comment_parts.append("Statistical outlier")
-                
-            # Create comment
-            final_comment = ". ".join(comment_parts)
-            
-            # Add to results
-            new_row = {
-                "process_id": pid,
-                "indicator_key": indicator_key,
-                "mean": mean_value,
-                "unit": unit,
-                "range_min": lower_bound,
-                "range_max": upper_bound,
-                "amount": amount,
-                "comment": final_comment
-            }
-            outliers_result = pd.concat([outliers_result, pd.DataFrame([new_row])], ignore_index=True)
-    
-    return outliers_result
+        low = q1 - 1.5 * iqr
+        high = q3 + 1.5 * iqr
+        mean = subdf["normalized_amount"].mean()
+        out = subdf[(subdf["normalized_amount"] < low) | (subdf["normalized_amount"] > high)]
+        for _, row in out.iterrows():
+            outliers_result.append({
+                "process_id": row["process_id"],
+                "indicator": row["indicator_key"],
+                "module": row["module"],
+                "unit": row["common_unit"],
+                "min": low,
+                "max": high,
+                "mean": mean,
+                "amount": row["normalized_amount"],
+                "comment": "Outlier by IQR"
+            })
+    return pd.DataFrame(outliers_result)
 
-def summarize_by_classification(df, classifications_df):
-    """
-    Summarize data by classification levels
-    """
-    if classifications_df.empty:
-        return pd.DataFrame(columns=['indicator_key', 'source', 'classification', 'level', 'name', 
-                                    'count', 'common_unit', 'mean', 'std', 'min', 'max', 'median'])
-    
-    results = []
-    
-    # Process each classification level
-    for level in ['0', '1', '2']:
-        level_df = classifications_df[classifications_df['level'] == level]
-        if level_df.empty:
-            continue
-# %%            
-        # Merge with the data
-        merged = df.merge(
-            level_df[['process_id', 'classification']], 
-            on='process_id', 
-            how='inner'  # Only keep rows that have a classification
-        )
-        
-        if merged.empty:
-            continue
-        
-        # Group by classification and calculate statistics
-        class_stats = merged.groupby(['indicator_key', 'source', 'classification'])
-        class_summary = class_stats.agg(
-            name=("name", "first"),
-            count=("normalized_amount", "count"),
-            common_unit=("common_unit", "first"),
-            mean=("normalized_amount", "mean"),
-            std=("normalized_amount", "std"),
-            min=("normalized_amount", "min"),
-            max=("normalized_amount", "max"),
-            median=("normalized_amount", "median")
-        ).reset_index()
-        
-        class_summary['level'] = level
-        results.append(class_summary)
-    
-    if not results:
-        return pd.DataFrame(columns=['indicator_key', 'source', 'classification', 'level', 'name', 
-                                    'count', 'common_unit', 'mean', 'std', 'min', 'max', 'median'])
-    
-    return pd.concat(results, ignore_index=True)
+def sanitize_filename(name):
+    """Sanitize a string to be used as a filename"""
+    # Replace invalid characters with underscore
+    invalid_chars = r'<>:"/\\|?*'
+    for char in invalid_chars:
+        name = name.replace(char, '_')
+    # Remove any other non-printable or control characters
+    name = ''.join(c for c in name if c.isprintable() and not c.isspace())
+    # Limit length and ensure not empty
+    return name[:50] if name else 'unnamed'
 
-def create_boxplot(data, indicator, output_path):
-    """Create a boxplot using matplotlib"""
-    plt.figure(figsize=(10, 6))
+def create_filtered_plots(data, indicator, path_box, path_hist):
+    clean_data = data.copy()
     
-    # Create a boxplot
-    ax = sns.boxplot(x='source', y='normalized_amount', data=data)
-    
-    # Add title and labels
-    plt.title(f"Distribution: {indicator}")
-    plt.ylabel("Normalized Amount")
+    # Skip plotting if less than 5 data points
+    if len(clean_data) < 5:
+        # Create empty plot files to avoid file not found errors
+        plt.figure(figsize=(6, 4))
+        plt.text(0.5, 0.5, f"Insufficient data for {indicator}", 
+                 horizontalalignment='center', verticalalignment='center')
+        plt.savefig(path_box)
+        plt.savefig(path_hist)
+        plt.close()
+        return
+        
+    q1 = clean_data["normalized_amount"].quantile(0.25)
+    q3 = clean_data["normalized_amount"].quantile(0.75)
+    iqr = q3 - q1
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+    clean_data = clean_data[(clean_data["normalized_amount"] >= lower_bound) &
+                            (clean_data["normalized_amount"] <= upper_bound)]
+
+    plt.figure(figsize=(6, 4))
+    sns.boxplot(x='module', y='normalized_amount', data=clean_data)
+    plt.title(f"Boxplot: {indicator}")
     plt.tight_layout()
-    
-    # Save figure
-    plt.savefig(output_path)
+    plt.savefig(path_box)
     plt.close()
-    
-    return output_path
 
-def export_with_data(summary, combined, outliers):
-    """
-    Export all analysis results to Excel file with proper formatting
-    """
-    with pd.ExcelWriter("lcia_exchange_analysis.xlsx", engine="openpyxl") as writer:
-        # Write summary sheet
-        summary.to_excel(writer, sheet_name="Summary", index=False)
-        
-        # Write outliers sheet with the new format
-        outliers.to_excel(writer, sheet_name="Outliers", index=False)
-        
-        # # Write classification summary
-        # classification_summary.to_excel(writer, sheet_name="Classifications", index=False)
-        
-        # # Write classification stats
-        # class_stats.to_excel(writer, sheet_name="ClassificationStats", index=False)
-        
-        # Get workbook
-        workbook = writer.book
-        
-        # Create individual sheets for each indicator
-        for indicator, group in combined.groupby("indicator_key"):
-            # Skip if group is empty
-            if group.empty:
-                continue
-                
-            # Truncate sheet name to 31 characters (Excel limit)
-            sheet_name = indicator[:31]
-            
-            # Write data
-            group.to_excel(writer, sheet_name=sheet_name, index=False)
-            
-            # Create summary section
-            sheet = workbook[sheet_name]
-            
-            # Add indicator summary
-            summary_data = summary[summary['indicator_key'] == indicator]
-            start_row = len(group) + 3
-            
-            sheet.cell(row=start_row, column=1).value = "INDICATOR SUMMARY"
-            for r_idx, row in enumerate(dataframe_to_rows(summary_data, index=False, header=True), start_row+1):
-                for c_idx, value in enumerate(row, 1):
-                    sheet.cell(row=r_idx, column=c_idx).value = value
-            
-            # Add outlier summary
-            indicator_outliers = outliers[outliers['indicator_key'] == indicator]
-            if not indicator_outliers.empty:
-                outlier_start = start_row + 4
-                sheet.cell(row=outlier_start, column=1).value = "OUTLIERS"
-                for r_idx, row in enumerate(dataframe_to_rows(indicator_outliers, index=False, header=True), outlier_start+1):
-                    for c_idx, value in enumerate(row, 1):
-                        sheet.cell(row=r_idx, column=c_idx).value = value
-            
-            # Create box plot using matplotlib instead of plotly
-            try:
-                if not group['normalized_amount'].isna().all():
-                    temp_dir = "temp_plots"
-                    os.makedirs(temp_dir, exist_ok=True)
-                    temp_path = os.path.join(temp_dir, f"plot_{sheet_name}.png")
-                    
-                    # Create the plot
-                    create_boxplot(group, indicator, temp_path)
-                    
-                    # Add image to sheet
-                    img = XLImage(temp_path)
-                    img.anchor = f"L{start_row}"
-                    sheet.add_image(img)
-            except Exception as e:
-                print(f"Warning: Could not create plot for {indicator}: {e}")
+    plt.figure(figsize=(6, 4))
+    sns.histplot(clean_data["normalized_amount"], bins=30, kde=True)
+    plt.title(f"Histogram: {indicator}")
+    plt.tight_layout()
+    plt.savefig(path_hist)
+    plt.close()
+
+def export_combined_excel(combined, outliers):
+    # Create directory for plots
+    os.makedirs("temp_plots", exist_ok=True)
     
-    # Clean up temporary files
-    if os.path.exists("temp_plots"):
-        for f in os.listdir("temp_plots"):
-            os.remove(os.path.join("temp_plots", f))
-        os.rmdir("temp_plots")
+    # Create a new workbook with openpyxl directly
+    wb = Workbook()
+    # Keep the default sheet for now (we'll use it if needed)
+    default_sheet = wb.active
+    default_sheet.title = "Summary"
+    
+    # Process each indicator/source group
+    has_data = False
+    
+    for (indicator, source), group in combined.groupby(["indicator_key", "source"]):
+        if group.empty:
+            continue
+            
+        has_data = True
+        
+        # Create sheet name as Indicator_key (source)
+        sheet_name = f"{indicator} ({source})"
+        if len(sheet_name) > 31:  # Excel sheet name length limit
+            sheet_name = f"{indicator[:28]} ({source})"
+            
+        sheet = wb.create_sheet(sheet_name)
+        
+        # Calculate summary by module
+        mod_summary = summarize_by_module(group)
+        
+        # Write summary to worksheet
+        rows = dataframe_to_rows(mod_summary, index=False, header=True)
+        for r_idx, row in enumerate(rows, 1):
+            for c_idx, val in enumerate(row, 1):
+                sheet.cell(row=r_idx, column=c_idx).value = val
+        
+        # Generate plots without outliers - use sanitized filenames
+        safe_indicator = sanitize_filename(indicator)
+        path_box = f"temp_plots/box_{safe_indicator}.png"
+        path_hist = f"temp_plots/hist_{safe_indicator}.png"
+        create_filtered_plots(group, indicator, path_box, path_hist)
+        
+        # Add plots below the summary table with enough space
+        summary_rows = len(mod_summary) + 3  # Add some extra space
+        
+        # Add boxplot
+        try:
+            img_box = XLImage(path_box)
+            img_box.anchor = f"A{summary_rows}"
+            sheet.add_image(img_box)
+            
+            # Add histogram next to boxplot (not on top of any text)
+            img_hist = XLImage(path_hist)
+            img_hist.anchor = f"I{summary_rows}"
+            sheet.add_image(img_hist)
+        except Exception as e:
+            # If image insertion fails, add a note
+            sheet.cell(row=summary_rows, column=1).value = f"Note: Could not insert plots. Error: {str(e)}"
+        
+        # Add outliers section after the plots
+        out = outliers[outliers["indicator"] == indicator].sort_values("process_id")
+        if not out.empty:
+            # Determine where to start the outliers section (below the plots)
+            outlier_start_row = summary_rows + 18  # Add enough space for plots
+            
+            # Add header for outliers section
+            sheet.cell(row=outlier_start_row, column=1).value = "OUTLIERS"
+            from openpyxl.styles import Font
+            sheet.cell(row=outlier_start_row, column=1).font = Font(bold=True)
+            
+            # Add headers for outliers table
+            headers = ["process_id", "indicator", "module", "unit", "min", "max", "mean", "amount", "comment"]
+            for i, h in enumerate(headers):
+                sheet.cell(row=outlier_start_row + 1, column=i + 1).value = h
+                sheet.cell(row=outlier_start_row + 1, column=i + 1).font = Font(bold=True)
+            
+            # Write outliers with empty row when process_id changes
+            row_idx = outlier_start_row + 1
+            prev_pid = None
+            
+            for i, row in out.iterrows():
+                # Insert empty row when process_id changes (except for the first process)
+                if row['process_id'] != prev_pid and prev_pid is not None:
+                    row_idx += 1
+                
+                row_idx += 1
+                prev_pid = row['process_id']
+                
+                # Write outlier data
+                for j, h in enumerate(headers):
+                    sheet.cell(row=row_idx, column=j + 1).value = row[h]
+
+    # If no data was processed, add a message to the default sheet
+    if not has_data:
+        default_sheet.cell(row=1, column=1).value = "No data found to analyze"
+    else:
+        # If we have data, we can safely remove the default sheet
+        if "Summary" in wb.sheetnames and len(wb.sheetnames) > 1:
+            wb.remove(wb["Summary"])
+    
+    # Save the workbook
+    wb.save("lcia_exchange_analysis.xlsx")
+    
+    # Remove temporary plot files
+    for f in os.listdir("temp_plots"):
+        os.remove(os.path.join("temp_plots", f))
+    os.rmdir("temp_plots")
 
 def main():
-    try:
-        print("Fetching LCIA...")
-        lcia_df = fetch_lcia_module_amounts()
-        print("Fetching Exchanges...")
-        exch_df = fetch_exchange_module_amounts()
-        print("Fetching all classifications...")
-        all_classifications = fetch_all_classifications()
-        
-        print("Preparing LCIA...")
-        lcia_prepped = prepare_lcia(lcia_df)
-        print("Preparing Exchanges...")
-        exch_prepped = prepare_exchanges(exch_df)
-        print("Combining...")
-        combined = pd.concat([lcia_prepped, exch_prepped], ignore_index=True)
-        print("Summarizing...")
-        summary = summarize_combined(combined)
-        
-        print("Detecting outliers...")
-        outliers = detect_outliers(combined, all_classifications)
-        
-        # print("Summarizing by classification...")
-        # class_stats = summarize_by_classification(combined, all_classifications)
-        # print("Summarizing classifications...")
-        # classification_summary = pd.DataFrame()
-        # if not all_classifications.empty:
-        #     classification_summary = all_classifications.groupby(
-        #         ['level', 'classification']
-        #     ).size().reset_index(name='product_count')
-        
-        print("Exporting results to Excel...")
-        export_with_data(summary, combined, outliers)
-        print("\n✅ Analysis saved to 'lcia_exchange_analysis.xlsx'")
-        
-    except Exception as e:
-        print(f"Error in main execution: {type(e).__name__}: {e}")
-        # Clean up temporary files even if there's an error
-        if os.path.exists("temp_plots"):
-            for f in os.listdir("temp_plots"):
-                os.remove(os.path.join("temp_plots", f))
-            os.rmdir("temp_plots")
-        raise
+    lcia_df = prepare_lcia(fetch_lcia_module_amounts())
+    exch_df = prepare_exchanges(fetch_exchange_module_amounts())
+    combined = pd.concat([lcia_df, exch_df], ignore_index=True)
+    outliers = detect_outliers(combined)
+    export_combined_excel(combined, outliers)
+    print("✅ Analysis saved to 'lcia_exchange_analysis.xlsx'")
 
 if __name__ == "__main__":
     main()
-# %%
