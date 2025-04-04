@@ -1,5 +1,4 @@
 import os
-import psycopg2
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -12,19 +11,20 @@ from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl import Workbook
 from PIL import Image
+from sqlalchemy import create_engine
 
 # === Load DB Credentials from .env ===
 load_dotenv()
-DB_PARAMS = {
-    "host": os.getenv("DB_HOST"),
-    "dbname": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "port": os.getenv("DB_PORT")
-}
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_PORT = os.getenv("DB_PORT")
 
-def connect():
-    return psycopg2.connect(**DB_PARAMS)
+def get_engine():
+    """Create and return a SQLAlchemy engine for database connections"""
+    connection_string = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    return create_engine(connection_string)
 
 def unit_conversion_factor(unit):
     if unit is None:
@@ -56,24 +56,26 @@ def unit_conversion_factor(unit):
 def fetch_lcia_module_amounts():
     query = """
         SELECT lr.method_en, lr.indicator_key, lr.unit, lma.module, lma.amount,
-               lr.process_id
+               lr.process_id, p.name_en as product_name
         FROM lcia_results lr
         JOIN lcia_moduleamounts lma ON lr.lcia_id = lma.lcia_id
+        LEFT JOIN products p ON lr.process_id = p.process_id
         WHERE lma.amount IS NOT NULL
     """
-    with connect() as conn:
-        return pd.read_sql(query, conn)
+    engine = get_engine()
+    return pd.read_sql(query, engine)
 
 def fetch_exchange_module_amounts():
     query = """
         SELECT e.flow_en, e.indicator_key, e.direction, e.unit, ema.module, ema.amount,
-               e.process_id
+               e.process_id, p.name_en as product_name
         FROM exchanges e
         JOIN exchange_moduleamounts ema ON e.exchange_id = ema.exchange_id
+        LEFT JOIN products p ON e.process_id = p.process_id
         WHERE ema.amount IS NOT NULL
     """
-    with connect() as conn:
-        return pd.read_sql(query, conn)
+    engine = get_engine()
+    return pd.read_sql(query, engine)
 
 def normalize_units_with_metadata(df, group_cols, value_col="amount"):
     df = df.copy()
@@ -137,10 +139,36 @@ def detect_outliers(df):
         low = q1 - 1.5 * iqr
         high = q3 + 1.5 * iqr
         mean = subdf["normalized_amount"].mean()
+        range_size = high - low
+        
         out = subdf[(subdf["normalized_amount"] < low) | (subdf["normalized_amount"] > high)]
         for _, row in out.iterrows():
+            # Calculate percentage position in the valid range and deviation from mean
+            amount = row["normalized_amount"]
+            percent_in_range = None
+            
+            # For values below the lower bound
+            if amount < low:
+                # Negative percentage indicates how much below the lower bound
+                percent_in_range = -100 * (low - amount) / range_size
+            # For values above the upper bound
+            elif amount > high:
+                # Percentage above 100 indicates how much above the upper bound
+                percent_in_range = 100 + (100 * (amount - high) / range_size)
+            
+            # Calculate deviation from mean (both absolute and percentage)
+            abs_deviation = amount - mean
+            pct_deviation = (amount - mean) / mean * 100 if mean != 0 else float('inf')
+            
+            # Get product name or use process ID if not available
+            process_id = row["process_id"]
+            product_name = row.get("product_name")
+            if pd.isna(product_name) or product_name is None or product_name == "":
+                product_name = f"Process {process_id}"
+            
             outliers_result.append({
-                "process_id": row["process_id"],
+                "process_id": process_id,
+                "product_name": product_name,
                 "indicator": row["indicator_key"],
                 "module": row["module"],
                 "unit": row["common_unit"],
@@ -148,6 +176,9 @@ def detect_outliers(df):
                 "max": high,
                 "mean": mean,
                 "amount": row["normalized_amount"],
+                "percent_in_range": percent_in_range,
+                "abs_deviation": abs_deviation,
+                "pct_deviation": pct_deviation,
                 "comment": "Outlier by IQR"
             })
     return pd.DataFrame(outliers_result)
