@@ -5,5 +5,11 @@
 logs
 *.log
 
-# Downloads
+# downloads
 /downloads
+
+# plots
+/plots
+
+*.csv
+*.xlsx
