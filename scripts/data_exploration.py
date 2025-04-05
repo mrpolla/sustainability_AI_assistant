@@ -12,6 +12,8 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl import Workbook
 from PIL import Image
 from sqlalchemy import create_engine
+import zipfile
+from datetime import datetime
 
 # === Load DB Credentials from .env ===
 load_dotenv()
@@ -78,28 +80,56 @@ def fetch_exchange_module_amounts():
     return pd.read_sql(query, engine)
 
 def normalize_units_with_metadata(df, group_cols, value_col="amount"):
+    """
+    Normalize units by choosing the most common unit for each indicator group.
+    
+    Parameters:
+    df (pandas.DataFrame): Input dataframe containing unit and amount columns
+    group_cols (list): Columns to group by, should include the indicator column
+    value_col (str): Column name containing the values to normalize
+    
+    Returns:
+    pandas.DataFrame: Dataframe with added columns for original_unit, 
+                     common_unit (most frequent), and normalized_amount
+    """
     df = df.copy()
     df["original_unit"] = df["unit"]
     df["common_unit"] = None
     df["normalized_amount"] = np.nan
+    
+    # Process each indicator group separately
     for keys, group in df.groupby(group_cols):
-        units = group["unit"].dropna().unique()
-        if len(units) == 0:
+        # Get frequency of each unit in this indicator group
+        unit_counts = group["unit"].value_counts().dropna()
+        if len(unit_counts) == 0:
             continue
-        base_unit = units[0]
+            
+        # Select the most frequent unit as the base unit
+        base_unit = unit_counts.index[0]
+        print(f"For indicator {keys}: Using most common unit '{base_unit}' ({unit_counts[base_unit]} occurrences)")
+        
+        # Get standardized unit name and conversion factor
         common_unit, base_factor = unit_conversion_factor(base_unit)
         if common_unit is None or base_factor is None:
+            print(f"  ⚠️ Could not determine common unit for base unit '{base_unit}'")
             continue
+            
+        # Normalize all values in this indicator group to the common unit
         for idx, row in group.iterrows():
             unit = row["unit"]
             amount = row[value_col]
             if pd.isna(amount):
                 continue
+                
             _, factor = unit_conversion_factor(unit)
             if factor is not None:
+                # Convert using ratio of conversion factors
                 norm_value = amount * (factor / base_factor)
                 df.at[idx, "normalized_amount"] = norm_value
                 df.at[idx, "common_unit"] = common_unit
+            else:
+                print(f"  ⚠️ Could not determine conversion factor for unit '{unit}'")
+                
     return df
 
 def prepare_lcia(df):
@@ -240,6 +270,11 @@ def export_combined_excel(combined, outliers):
     default_sheet = wb.active
     default_sheet.title = "Summary"
     
+    # Create a list to track all files to be zipped
+    files_to_zip = []
+    excel_filename = "lcia_exchange_analysis.xlsx"
+    files_to_zip.append(excel_filename)
+    
     # Process each indicator/source group
     has_data = False
     
@@ -265,11 +300,15 @@ def export_combined_excel(combined, outliers):
             for c_idx, val in enumerate(row, 1):
                 sheet.cell(row=r_idx, column=c_idx).value = val
         
-        # Generate plots without outliers - use sanitized filenames
-        safe_indicator = sanitize_filename(indicator)
-        path_box = f"temp_plots/box_{safe_indicator}.png"
-        path_hist = f"temp_plots/hist_{safe_indicator}.png"
+        # Generate plots without outliers - use sanitized filenames and include sheet name
+        safe_sheet_name = sanitize_filename(sheet_name)
+        path_box = f"temp_plots/{safe_sheet_name}_boxplot.png"
+        path_hist = f"temp_plots/{safe_sheet_name}_histogram.png"
         create_filtered_plots(group, indicator, path_box, path_hist)
+        
+        # Add the plot files to our zip list
+        files_to_zip.append(path_box)
+        files_to_zip.append(path_hist)
         
         # Add plots below the summary table with enough space
         summary_rows = len(mod_summary) + 3  # Add some extra space
@@ -299,8 +338,9 @@ def export_combined_excel(combined, outliers):
             from openpyxl.styles import Font
             sheet.cell(row=outlier_start_row, column=1).font = Font(bold=True)
             
-            # Add headers for outliers table
-            headers = ["process_id", "indicator", "module", "unit", "min", "max", "mean", "amount", "comment"]
+            # Add headers for outliers table - include product_name and percentage columns
+            headers = ["process_id", "product_name", "indicator", "module", "unit", "min", "max", "mean", "amount", 
+                     "percent_in_range", "pct_deviation", "comment"]
             for i, h in enumerate(headers):
                 sheet.cell(row=outlier_start_row + 1, column=i + 1).value = h
                 sheet.cell(row=outlier_start_row + 1, column=i + 1).font = Font(bold=True)
@@ -320,6 +360,38 @@ def export_combined_excel(combined, outliers):
                 # Write outlier data
                 for j, h in enumerate(headers):
                     sheet.cell(row=row_idx, column=j + 1).value = row[h]
+    
+    # Create "All Outliers" sheet
+    if not outliers.empty:
+        # Add a sheet with all outliers sorted by frequency
+        all_outliers_sheet = wb.create_sheet("All Outliers")
+        
+        # Count frequency of each process_id in outliers
+        process_counts = outliers['process_id'].value_counts().reset_index()
+        process_counts.columns = ['process_id', 'occurrence_count']
+        
+        # Merge counts with outliers dataframe
+        outliers_with_counts = pd.merge(outliers, process_counts, on='process_id')
+        
+        # Sort by occurrence count (descending), then by process_id
+        sorted_outliers = outliers_with_counts.sort_values(
+            ['occurrence_count', 'process_id'], 
+            ascending=[False, True]
+        )
+        
+        # Add a header row
+        headers = ["process_id", "product_name", "indicator", "module", "unit", "min", "max", 
+                  "mean", "amount", "percent_in_range", "pct_deviation", "occurrence_count", "comment"]
+        
+        for i, h in enumerate(headers):
+            all_outliers_sheet.cell(row=1, column=i + 1).value = h
+            all_outliers_sheet.cell(row=1, column=i + 1).font = Font(bold=True)
+        
+        # Write all outliers sorted by frequency
+        rows = dataframe_to_rows(sorted_outliers[headers], index=False, header=False)
+        for r_idx, row in enumerate(rows, 2):  # Start from row 2 (after header)
+            for c_idx, val in enumerate(row, 1):
+                all_outliers_sheet.cell(row=r_idx, column=c_idx).value = val
 
     # If no data was processed, add a message to the default sheet
     if not has_data:
@@ -330,7 +402,23 @@ def export_combined_excel(combined, outliers):
             wb.remove(wb["Summary"])
     
     # Save the workbook
-    wb.save("lcia_exchange_analysis.xlsx")
+    wb.save(excel_filename)
+    
+    # Create zip file with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_filename = f"lcia_exchange_analysis_{timestamp}.zip"
+    
+    with zipfile.ZipFile(zip_filename, 'w') as zipf:
+        # Add Excel file
+        zipf.write(excel_filename)
+        
+        # Add all plot files
+        for file in files_to_zip:
+            if os.path.exists(file):
+                zipf.write(file)
+    
+    print(f"✅ Analysis saved to '{excel_filename}'")
+    print(f"✅ All files zipped to '{zip_filename}'")
     
     # Remove temporary plot files
     for f in os.listdir("temp_plots"):
