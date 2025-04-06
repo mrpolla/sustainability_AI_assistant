@@ -120,7 +120,7 @@ async def ask_question(data: QuestionRequest):
                 cur.execute(f"""
                     SELECT chunk
                     FROM epd_embeddings
-                    WHERE product_id IN ({placeholders})
+                    WHERE process_id IN ({placeholders})
                     ORDER BY embedding <-> %s::vector
                     LIMIT 5;
                 """, (*document_ids, embedding))
@@ -371,6 +371,152 @@ async def get_all_indicators():
         raise
     except Exception as e:
         error_msg = f"Unexpected error while fetching indicators: {str(e)}"
+        logger.exception(error_msg)
+        return JSONResponse(
+            status_code=500, 
+            content={"error": error_msg}
+        )
+
+@app.post("/compare")
+async def compare_products(data: dict):
+    """
+    Fetches comparison data for selected products and indicators
+    """
+    product_ids = data.get("productIds", [])
+    indicator_keys = data.get("indicatorKeys", [])
+    
+    logger.info(f"[INFO] Compare request received for {len(product_ids)} products and {len(indicator_keys)} indicators")
+    
+    if not product_ids:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No products selected for comparison"}
+        )
+    
+    if not indicator_keys:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No indicators selected for comparison"}
+        )
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        try:
+            # Get product info first
+            product_placeholders = ', '.join(['%s'] * len(product_ids))
+            cur.execute(f"""
+                SELECT process_id, name_en
+                FROM products
+                WHERE process_id IN ({product_placeholders})
+            """, tuple(product_ids))
+            
+            product_rows = cur.fetchall()
+            products = [
+                {"id": str(row[0]), "name": row[1]} 
+                for row in product_rows
+            ]
+            
+            # Get LCIA results
+            indicator_placeholders = ', '.join(['%s'] * len(indicator_keys))
+            cur.execute(f"""
+                SELECT l.process_id, l.indicator_key, l.unit, lm.module, lm.amount
+                FROM lcia_results l
+                JOIN lcia_moduleamounts lm ON l.lcia_id = lm.lcia_id
+                WHERE l.process_id IN ({product_placeholders})
+                AND l.indicator_key IN ({indicator_placeholders})
+            """, tuple(product_ids) + tuple(indicator_keys))
+            
+            lcia_rows = cur.fetchall()
+            
+            # Get exchange results
+            cur.execute(f"""
+                SELECT e.process_id, e.indicator_key, e.unit, em.module, em.amount
+                FROM exchanges e
+                JOIN exchange_moduleamounts em ON e.exchange_id = em.exchange_id
+                WHERE e.process_id IN ({product_placeholders})
+                AND e.indicator_key IN ({indicator_placeholders})
+            """, tuple(product_ids) + tuple(indicator_keys))
+            
+            exchange_rows = cur.fetchall()
+            
+        except Exception as query_error:
+            logger.exception("Database query error during comparison")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Database query error: {str(query_error)}"
+            )
+        finally:
+            cur.close()
+            conn.close()
+        
+        # Process the data for the frontend
+        comparison_data = {}
+        
+        # Process LCIA results
+        for row in lcia_rows:
+            product_id, indicator_key, unit, module, amount = row
+            
+            if indicator_key not in comparison_data:
+                comparison_data[indicator_key] = {
+                    "name": indicator_key,
+                    "unit": unit,
+                    "products": {}
+                }
+            
+            if str(product_id) not in comparison_data[indicator_key]["products"]:
+                comparison_data[indicator_key]["products"][str(product_id)] = {
+                    "modules": {}
+                }
+            
+            if module:
+                comparison_data[indicator_key]["products"][str(product_id)]["modules"][module] = amount
+        
+        # Process exchange results
+        for row in exchange_rows:
+            product_id, indicator_key, unit, module, amount = row
+            
+            if indicator_key not in comparison_data:
+                comparison_data[indicator_key] = {
+                    "name": indicator_key,
+                    "unit": unit,
+                    "products": {}
+                }
+            
+            if str(product_id) not in comparison_data[indicator_key]["products"]:
+                comparison_data[indicator_key]["products"][str(product_id)] = {
+                    "modules": {}
+                }
+            
+            if module:
+                comparison_data[indicator_key]["products"][str(product_id)]["modules"][module] = amount
+        
+        # Format data for the frontend
+        result = {
+            "products": products,
+            "indicators": [
+                {
+                    "name": indicator_key,
+                    "productData": [
+                        {
+                            "productId": product_id,
+                            "modules": product_data.get("modules", {})
+                        }
+                        for product_id, product_data in data["products"].items()
+                    ]
+                }
+                for indicator_key, data in comparison_data.items()
+            ]
+        }
+        
+        return JSONResponse(content=result)
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        error_msg = f"Unexpected error during comparison: {str(e)}"
         logger.exception(error_msg)
         return JSONResponse(
             status_code=500, 

@@ -170,3 +170,26 @@ export const fetchAllIndicators = async () => {
     throw error;
   }
 };
+
+/**
+ * Compare selected products with selected indicators
+ * @param {string[]} productIds - Array of selected product IDs
+ * @param {Object[]} indicators - Array of selected indicator objects
+ * @returns {Promise<Object>} - Comparison data
+ */
+export const compareProducts = async (productIds, indicators) => {
+  try {
+    // Extract indicator keys from indicator objects
+    const indicatorKeys = indicators.map((indicator) => indicator.name);
+
+    const data = await apiRequest("/compare", {
+      productIds,
+      indicatorKeys,
+    });
+
+    return data;
+  } catch (error) {
+    console.error("Comparison request failed:", error);
+    throw error;
+  }
+};
