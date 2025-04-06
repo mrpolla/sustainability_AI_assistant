@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "Minimal React app for XML Q&A",
   "scripts": {
-    "start": "parcel src/index.html --open",
-    "build": "parcel build src/index.html"
+    "start": "parcel index.html --open",
+    "build": "parcel build index.html"
   },
   "dependencies": {
     "react": "^18.2.0",

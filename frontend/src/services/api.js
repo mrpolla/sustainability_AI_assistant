@@ -2,11 +2,11 @@
  * API service for handling backend communication
  */
 
-// Update this URL to match your backend server address
+// Backend API URL
 const API_URL = "http://localhost:8001";
 
 // Default request timeout in milliseconds
-const DEFAULT_TIMEOUT = 10000;
+const DEFAULT_TIMEOUT = 20000;
 
 /**
  * Helper function to create a request with timeout
@@ -29,28 +29,91 @@ const timeoutFetch = (fetchPromise, timeout = DEFAULT_TIMEOUT) => {
 };
 
 /**
+ * Generic API request function with error handling
+ * @param {string} endpoint - API endpoint
+ * @param {Object} data - Request data
+ * @returns {Promise<Object>} - Response data
+ */
+const apiRequest = async (endpoint, data) => {
+  try {
+    console.log(`Sending request to ${API_URL}${endpoint}`);
+
+    const response = await timeoutFetch(
+      fetch(`${API_URL}${endpoint}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(data),
+      })
+    );
+
+    // Try to parse the response as JSON first
+    let responseData;
+    let responseText = "";
+
+    try {
+      responseText = await response.text();
+      responseData = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error("Failed to parse response as JSON:", responseText);
+      throw new Error(
+        `Invalid response format: ${responseText.substring(0, 100)}`
+      );
+    }
+
+    // Check if the response is OK
+    if (!response.ok) {
+      console.error(`API error ${response.status}:`, responseData);
+      throw new Error(
+        responseData.error ||
+          responseData.detail ||
+          `API error: ${response.status}`
+      );
+    }
+
+    return responseData;
+  } catch (error) {
+    if (error.name === "AbortError" || error.message.includes("timed out")) {
+      console.error("Request timed out");
+      throw new Error(
+        "Request timed out. The server took too long to respond."
+      );
+    } else if (
+      error.name === "TypeError" &&
+      error.message.includes("Failed to fetch")
+    ) {
+      console.error("Network error:", error);
+      throw new Error(
+        "Cannot connect to the server. Please check your internet connection."
+      );
+    } else {
+      console.error(`Request to ${endpoint} failed:`, error);
+      throw error;
+    }
+  }
+};
+
+/**
  * Send a question to the backend API
  * @param {string} question - The question to send
  * @param {string[]} selectedDocuments - Array of selected document IDs
  * @returns {Promise<Object>} - The response data
  */
 export const askQuestion = async (question, selectedDocuments = []) => {
-  const response = await fetch(`${API_URL}/ask`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  try {
+    const data = await apiRequest("/ask", {
       question,
       documentIds: selectedDocuments,
-    }),
-  });
+    });
 
-  if (!response.ok) {
-    throw new Error("API request failed");
+    return {
+      answer: data.answer || "No answer returned from the server.",
+    };
+  } catch (error) {
+    console.error("Question request failed:", error);
+    throw error;
   }
-
-  return await response.json();
 };
 
 /**
@@ -60,35 +123,32 @@ export const askQuestion = async (question, selectedDocuments = []) => {
  */
 export const searchProducts = async (searchTerm) => {
   try {
-    console.log(
-      `Sending search request to ${API_URL}/search with term: ${searchTerm}`
-    );
+    const data = await apiRequest("/search", { searchTerm });
 
-    const response = await timeoutFetch(
-      fetch(`${API_URL}/search`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ searchTerm }),
-      })
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(
-        `Search API returned status ${response.status}: ${errorText}`
-      );
-      throw new Error(
-        `API error: ${response.status} - ${errorText || response.statusText}`
-      );
-    }
-
-    const data = await response.json();
-    console.log("Search API response:", data);
-    return data;
+    // Ensure items is always an array even if the backend returns null or undefined
+    return {
+      items: Array.isArray(data.items) ? data.items : [],
+    };
   } catch (error) {
-    console.error("Search request failed:", error.message);
+    console.error("Search request failed:", error);
+    throw error;
+  }
+};
+
+/**
+ * Fetch all product names for autocomplete
+ * @returns {Promise<Array>} - Array of product names
+ */
+export const fetchAllProductNames = async () => {
+  try {
+    const data = await apiRequest("/products", {});
+
+    // Ensure products is always an array even if the backend returns null or undefined
+    return {
+      products: Array.isArray(data.products) ? data.products : [],
+    };
+  } catch (error) {
+    console.error("Failed to fetch product names:", error);
     throw error;
   }
 };

@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -6,6 +6,7 @@ from sentence_transformers import SentenceTransformer
 import psycopg2
 import os
 import logging
+import traceback
 from dotenv import load_dotenv
 from llm_utils import query_llm
 
@@ -44,7 +45,12 @@ class SearchRequest(BaseModel):
     searchTerm: str
 
 # Load embedding model
-embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+try:
+    embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+    logger.info("Embedding model loaded successfully")
+except Exception as e:
+    logger.exception("Failed to load embedding model")
+    embedding_model = None  # Will handle this case in the endpoints
 
 # DB connection settings
 DB_PARAMS = {
@@ -55,60 +61,105 @@ DB_PARAMS = {
     "port": os.getenv("DB_PORT")
 }
 
+def get_db_connection():
+    """
+    Create a database connection with proper error handling
+    """
+    try:
+        conn = psycopg2.connect(**DB_PARAMS)
+        return conn
+    except Exception as e:
+        logger.exception("Failed to connect to database")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database connection failed: {str(e)}"
+        )
+
 @app.post("/ask")
 async def ask_question(data: QuestionRequest):
-    question = data.question
-    document_ids = data.documentIds
-    logger.info(f"[INFO] Question received: {question}")
+    question = data.question.strip()
+    document_ids = data.documentIds or []
     
+    # Input validation
+    if not question:
+        return JSONResponse(
+            status_code=400,
+            content={"answer": "Question cannot be empty."}
+        )
+    
+    logger.info(f"[INFO] Question received: {question}")
     if document_ids:
         logger.info(f"[INFO] Selected documents: {document_ids}")
+
+    # Check if embedding model is available
+    if embedding_model is None:
+        return JSONResponse(
+            status_code=503,
+            content={"answer": "Embedding model is not available. Please try again later."}
+        )
 
     # Step 1: Create embedding
     try:
         embedding = embedding_model.encode(question).tolist()
     except Exception as e:
         logger.exception("Error during embedding")
-        return JSONResponse({"answer": f"[EMBEDDING ERROR] {str(e)}"})
+        return JSONResponse(
+            status_code=500,
+            content={"answer": f"Failed to process your question: {str(e)}"}
+        )
 
     # Step 2: Retrieve relevant context from DB
     try:
-        conn = psycopg2.connect(**DB_PARAMS)
+        conn = get_db_connection()
         cur = conn.cursor()
         
-        # If document IDs are provided, only search within those documents
-        if document_ids:
-            placeholders = ', '.join(['%s'] * len(document_ids))
-            cur.execute(f"""
-                SELECT chunk
-                FROM epd_embeddings
-                WHERE product_id IN ({placeholders})
-                ORDER BY embedding <-> %s::vector
-                LIMIT 5;
-            """, (*document_ids, embedding))
-        else:
-            cur.execute("""
-                SELECT chunk
-                FROM epd_embeddings
-                ORDER BY embedding <-> %s::vector
-                LIMIT 5;
-            """, (embedding,))
-            
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        try:
+            # If document IDs are provided, only search within those documents
+            if document_ids:
+                placeholders = ', '.join(['%s'] * len(document_ids))
+                cur.execute(f"""
+                    SELECT chunk
+                    FROM epd_embeddings
+                    WHERE product_id IN ({placeholders})
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT 5;
+                """, (*document_ids, embedding))
+            else:
+                cur.execute("""
+                    SELECT chunk
+                    FROM epd_embeddings
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT 5;
+                """, (embedding,))
+                
+            rows = cur.fetchall()
+        except Exception as db_error:
+            logger.exception("Database query error")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Database query error: {str(db_error)}"
+            )
+        finally:
+            cur.close()
+            conn.close()
 
         if not rows:
             logger.warning("No relevant chunks found.")
-            return JSONResponse({"answer": "No relevant data found."})
+            return JSONResponse(
+                content={"answer": "I couldn't find relevant information to answer your question. Try a different question or select different products."}
+            )
 
         logger.info(f"Retrieved {len(rows)} chunks")
-        for i, row in enumerate(rows, start=1):
-            logger.info(f"Chunk {i}: {row[0]}")
 
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        logger.exception("Database error")
-        return JSONResponse({"answer": f"[DB ERROR] {str(e)}"})
+        logger.exception("Unexpected database error")
+        return JSONResponse(
+            status_code=500,
+            content={"answer": f"An unexpected error occurred while retrieving data: {str(e)}"}
+        )
 
     # Step 3: Construct prompt
     context = "\n\n".join([row[0] for row in rows])
@@ -126,49 +177,151 @@ Answer:"""
     # Step 4: Send prompt to inference service
     try:
         answer = query_llm(prompt)
+        if not answer or not isinstance(answer, str):
+            logger.warning(f"LLM returned invalid answer: {answer}")
+            return JSONResponse(
+                content={"answer": "I'm sorry, I couldn't generate a proper response. Please try again."}
+            )
+            
         logger.info("LLM returned result.")
-        return JSONResponse({"answer": answer})
+        return JSONResponse(content={"answer": answer})
     except Exception as e:
         logger.exception("Inference failed")
-        return JSONResponse({"answer": f"[INFERENCE ERROR] {str(e)}"})
+        return JSONResponse(
+            status_code=503,
+            content={"answer": f"I'm sorry, I'm having trouble generating a response right now. Please try again later. (Error: {str(e)})"}
+        )
 
 @app.post("/search")
 async def search_products(data: SearchRequest):
-    search_term = data.searchTerm
+    search_term = data.searchTerm.strip() if data.searchTerm else ""
     logger.info(f"[INFO] Search term received: {search_term}")
 
-    if not search_term or len(search_term.strip()) == 0:
-        return JSONResponse({"items": []})
+    if not search_term:
+        return JSONResponse(content={"items": []})
 
     # Search for products in the database
     try:
-        conn = psycopg2.connect(**DB_PARAMS)
+        conn = get_db_connection()
         cur = conn.cursor()
         
-        # Search in both name_en and description_en columns
-        cur.execute("""
-            SELECT process_id, name_en, description_en
-            FROM products
-            WHERE 
-                name_en ILIKE %s OR
-                description_en ILIKE %s
-            LIMIT 20;
-        """, (f"%{search_term}%", f"%{search_term}%"))
-        
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        try:
+            # Search in both name_en and description_en columns
+            cur.execute("""
+                SELECT process_id, name_en, description_en
+                FROM products
+                WHERE 
+                    name_en ILIKE %s OR
+                    description_en ILIKE %s
+                LIMIT 20;
+            """, (f"%{search_term}%", f"%{search_term}%"))
+            
+            rows = cur.fetchall()
+        except Exception as query_error:
+            logger.exception("Database query error during product search")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Database query error: {str(query_error)}"
+            )
+        finally:
+            cur.close()
+            conn.close()
 
         if not rows:
             logger.warning("No products found matching the search term.")
-            return JSONResponse({"items": []})
+            return JSONResponse(content={"items": []})
 
         # Format results for the frontend
-        items = [{"id": str(row[0]), "name": row[1]} for row in rows]
+        items = [{"id": str(row[0]), "name": row[1], "description": row[2]} for row in rows]
         logger.info(f"Found {len(items)} products matching the search term.")
         
-        return JSONResponse({"items": items})
+        return JSONResponse(content={"items": items})
         
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        logger.exception("Database error during product search")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        error_msg = f"Unexpected error during product search: {str(e)}"
+        logger.exception(error_msg)
+        logger.error(traceback.format_exc())
+        return JSONResponse(
+            status_code=500, 
+            content={"error": error_msg}
+        )
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """
+    Simple health check endpoint to verify the API is running
+    """
+    try:
+        # Check database connection
+        conn = get_db_connection()
+        conn.close()
+        
+        # Return status
+        return JSONResponse(
+            content={
+                "status": "ok",
+                "database": "connected",
+                "embedding_model": "loaded" if embedding_model is not None else "not_loaded"
+            }
+        )
+    except Exception as e:
+        logger.exception("Health check failed")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "message": str(e),
+                "embedding_model": "loaded" if embedding_model is not None else "not_loaded"
+            }
+        )
+
+@app.post("/products")
+async def get_all_products():
+    """
+    Get all product names for autocomplete functionality
+    """
+    logger.info("[INFO] Fetching all product names for autocomplete")
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        try:
+            # Get all product names and IDs
+            cur.execute("""
+                SELECT process_id, name_en 
+                FROM products 
+                ORDER BY name_en
+            """)
+            
+            rows = cur.fetchall()
+        except Exception as query_error:
+            logger.exception("Database query error while fetching product names")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Database query error: {str(query_error)}"
+            )
+        finally:
+            cur.close()
+            conn.close()
+
+        # Format products for the frontend
+        products = [{"id": str(row[0]), "name": row[1]} for row in rows]
+        logger.info(f"Fetched {len(products)} product names")
+        
+        return JSONResponse(content={"products": products})
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        error_msg = f"Unexpected error while fetching product names: {str(e)}"
+        logger.exception(error_msg)
+        return JSONResponse(
+            status_code=500, 
+            content={"error": error_msg}
+        )
