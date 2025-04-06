@@ -152,3 +152,21 @@ export const fetchAllProductNames = async () => {
     throw error;
   }
 };
+
+/**
+ * Fetch all unique indicators
+ * @returns {Promise<Array>} - Array of indicators
+ */
+export const fetchAllIndicators = async () => {
+  try {
+    const data = await apiRequest("/indicators", {});
+
+    // Ensure indicators is always an array even if the backend returns null or undefined
+    return {
+      indicators: Array.isArray(data.indicators) ? data.indicators : [],
+    };
+  } catch (error) {
+    console.error("Failed to fetch indicators:", error);
+    throw error;
+  }
+};

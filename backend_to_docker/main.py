@@ -325,3 +325,54 @@ async def get_all_products():
             status_code=500, 
             content={"error": error_msg}
         )
+    
+@app.post("/indicators")
+async def get_all_indicators():
+    """
+    Get all unique indicator_key values from lcia_results and exchanges tables
+    """
+    logger.info("[INFO] Fetching all unique indicators for autocomplete")
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        try:
+            # Get unique indicator_key values from both tables
+            cur.execute("""
+                SELECT DISTINCT indicator_key FROM (
+                    SELECT indicator_key FROM lcia_results
+                    UNION
+                    SELECT indicator_key FROM exchanges
+                ) AS combined_indicators
+                WHERE indicator_key IS NOT NULL AND indicator_key <> ''
+                ORDER BY indicator_key
+            """)
+            
+            rows = cur.fetchall()
+        except Exception as query_error:
+            logger.exception("Database query error while fetching indicators")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Database query error: {str(query_error)}"
+            )
+        finally:
+            cur.close()
+            conn.close()
+
+        # Format indicators for the frontend
+        indicators = [{"id": i, "name": row[0]} for i, row in enumerate(rows, start=1)]
+        logger.info(f"Fetched {len(indicators)} unique indicators")
+        
+        return JSONResponse(content={"indicators": indicators})
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        error_msg = f"Unexpected error while fetching indicators: {str(e)}"
+        logger.exception(error_msg)
+        return JSONResponse(
+            status_code=500, 
+            content={"error": error_msg}
+        )
