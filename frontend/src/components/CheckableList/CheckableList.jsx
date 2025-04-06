@@ -13,7 +13,7 @@ const CheckableList = ({ items, selectedItems, onItemToggle }) => {
     >
       {items.length === 0 ? (
         <p style={{ padding: "0.5rem", color: "#666", textAlign: "center" }}>
-          No items to display
+          Type in the search box to find products
         </p>
       ) : (
         <ul style={{ listStyle: "none", padding: "0", margin: "0" }}>
@@ -41,7 +41,12 @@ const CheckableList = ({ items, selectedItems, onItemToggle }) => {
                   onChange={() => onItemToggle(item.id)}
                   style={{ marginRight: "0.5rem" }}
                 />
-                {item.name}
+                <div>
+                  <div>{item.name}</div>
+                  <div style={{ fontSize: "0.8rem", color: "#666" }}>
+                    ID: {item.id}
+                  </div>
+                </div>
               </label>
             </li>
           ))}

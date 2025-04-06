@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import Header from "./components/Header";
 import SearchBox from "./components/SearchBox";
 import CheckableList from "./components/CheckableList";
 import QuestionForm from "./components/QuestionForm";
 import ResponseDisplay from "./components/ResponseDisplay";
-import { askQuestion } from "./services/api";
+import { askQuestion, searchProducts } from "./services/api";
 
 function App() {
   const [question, setQuestion] = useState("");
@@ -12,30 +12,30 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [searchResults, setSearchResults] = useState([]);
   const [selectedItems, setSelectedItems] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
 
-  // Sample items - in a real app, these would come from an API
-  // You'll want to replace this with actual data from your backend
-  useEffect(() => {
-    // Simulating initial data
-    setSearchResults([
-      { id: "1", name: "Document 1" },
-      { id: "2", name: "Document 2" },
-      { id: "3", name: "Document 3" },
-    ]);
-  }, []);
+  const [searchError, setSearchError] = useState("");
 
   const handleSearch = async (searchTerm) => {
-    // In a real app, this would call your API
-    console.log("Searching for:", searchTerm);
+    if (!searchTerm.trim()) {
+      setSearchResults([]);
+      setSearchError("");
+      return;
+    }
 
-    // Simulating search results
-    // Replace with actual API call
-    setSearchResults([
-      { id: "1", name: `Result for "${searchTerm}" 1` },
-      { id: "2", name: `Result for "${searchTerm}" 2` },
-      { id: "3", name: `Result for "${searchTerm}" 3` },
-      { id: "4", name: `Result for "${searchTerm}" 4` },
-    ]);
+    setSearchLoading(true);
+    setSearchError("");
+
+    try {
+      const data = await searchProducts(searchTerm);
+      setSearchResults(data.items || []);
+    } catch (error) {
+      console.error("Search failed:", error);
+      setSearchError(`Search failed: ${error.message || "Unknown error"}`);
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
   };
 
   const handleItemToggle = (itemId) => {
@@ -49,13 +49,16 @@ function App() {
   const handleSubmit = async () => {
     if (!question) return;
     setLoading(true);
+    setAnswer("");
 
     try {
       // You can now include selected items in your question API call
       const data = await askQuestion(question, selectedItems);
       setAnswer(data.answer);
     } catch (err) {
-      setAnswer("Error communicating with backend.");
+      setAnswer(
+        `Error communicating with backend: ${err.message || "Unknown error"}`
+      );
     } finally {
       setLoading(false);
     }
@@ -74,13 +77,36 @@ function App() {
 
       {/* Search Box */}
       <div style={{ marginTop: "1.5rem", marginBottom: "1rem" }}>
-        <h3>Search Documents</h3>
+        <h3>Search Products</h3>
         <SearchBox onSearch={handleSearch} />
+        {searchError && (
+          <div
+            style={{
+              color: "red",
+              marginTop: "0.5rem",
+              padding: "0.5rem",
+              border: "1px solid #ffcccc",
+              borderRadius: "4px",
+              backgroundColor: "#fff8f8",
+            }}
+          >
+            {searchError}
+          </div>
+        )}
       </div>
 
       {/* Checkable List */}
       <div>
-        <h3>Select Documents ({selectedItems.length} selected)</h3>
+        <h3>
+          Select Products ({selectedItems.length} selected)
+          {searchLoading && (
+            <span
+              style={{ marginLeft: "1rem", fontSize: "0.9rem", color: "#666" }}
+            >
+              Loading...
+            </span>
+          )}
+        </h3>
         <CheckableList
           items={searchResults}
           selectedItems={selectedItems}

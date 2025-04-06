@@ -35,9 +35,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Request schema
+# Request schemas
 class QuestionRequest(BaseModel):
     question: str
+    documentIds: list[str] = []
+
+class SearchRequest(BaseModel):
+    searchTerm: str
 
 # Load embedding model
 embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
@@ -54,7 +58,11 @@ DB_PARAMS = {
 @app.post("/ask")
 async def ask_question(data: QuestionRequest):
     question = data.question
-    print(f"[INFO] Question received: {question}")
+    document_ids = data.documentIds
+    logger.info(f"[INFO] Question received: {question}")
+    
+    if document_ids:
+        logger.info(f"[INFO] Selected documents: {document_ids}")
 
     # Step 1: Create embedding
     try:
@@ -67,12 +75,25 @@ async def ask_question(data: QuestionRequest):
     try:
         conn = psycopg2.connect(**DB_PARAMS)
         cur = conn.cursor()
-        cur.execute("""
-            SELECT chunk
-            FROM epd_embeddings
-            ORDER BY embedding <-> %s::vector
-            LIMIT 5;
-        """, (embedding,))
+        
+        # If document IDs are provided, only search within those documents
+        if document_ids:
+            placeholders = ', '.join(['%s'] * len(document_ids))
+            cur.execute(f"""
+                SELECT chunk
+                FROM epd_embeddings
+                WHERE product_id IN ({placeholders})
+                ORDER BY embedding <-> %s::vector
+                LIMIT 5;
+            """, (*document_ids, embedding))
+        else:
+            cur.execute("""
+                SELECT chunk
+                FROM epd_embeddings
+                ORDER BY embedding <-> %s::vector
+                LIMIT 5;
+            """, (embedding,))
+            
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -102,7 +123,7 @@ Answer:"""
 
     logger.info("Prompt constructed. Sending to inference...")
 
-    # Step 4: Send prompt to inference service (Kaggle/Colab/HF)
+    # Step 4: Send prompt to inference service
     try:
         answer = query_llm(prompt)
         logger.info("LLM returned result.")
@@ -110,3 +131,44 @@ Answer:"""
     except Exception as e:
         logger.exception("Inference failed")
         return JSONResponse({"answer": f"[INFERENCE ERROR] {str(e)}"})
+
+@app.post("/search")
+async def search_products(data: SearchRequest):
+    search_term = data.searchTerm
+    logger.info(f"[INFO] Search term received: {search_term}")
+
+    if not search_term or len(search_term.strip()) == 0:
+        return JSONResponse({"items": []})
+
+    # Search for products in the database
+    try:
+        conn = psycopg2.connect(**DB_PARAMS)
+        cur = conn.cursor()
+        
+        # Search in both name_en and description_en columns
+        cur.execute("""
+            SELECT process_id, name_en, description_en
+            FROM products
+            WHERE 
+                name_en ILIKE %s OR
+                description_en ILIKE %s
+            LIMIT 20;
+        """, (f"%{search_term}%", f"%{search_term}%"))
+        
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not rows:
+            logger.warning("No products found matching the search term.")
+            return JSONResponse({"items": []})
+
+        # Format results for the frontend
+        items = [{"id": str(row[0]), "name": row[1]} for row in rows]
+        logger.info(f"Found {len(items)} products matching the search term.")
+        
+        return JSONResponse({"items": items})
+        
+    except Exception as e:
+        logger.exception("Database error during product search")
+        return JSONResponse({"error": str(e)}, status_code=500)

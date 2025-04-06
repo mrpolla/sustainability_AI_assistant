@@ -1,12 +1,17 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 
 const SearchBox = ({ onSearch }) => {
   const [searchTerm, setSearchTerm] = useState("");
 
+  // Clear search results when component mounts
+  useEffect(() => {
+    // Send empty search term to clear results
+    onSearch("");
+  }, []);
+
   const handleSearch = () => {
-    if (searchTerm.trim()) {
-      onSearch(searchTerm);
-    }
+    // Even if empty, we want to trigger the search to clear results
+    onSearch(searchTerm);
   };
 
   const handleKeyPress = (e) => {
