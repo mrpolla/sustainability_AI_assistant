@@ -145,7 +145,14 @@ def prepare_exchanges(df):
     return normalize_units_with_metadata(df, ["indicator_key"])
 
 def summarize_by_module(df):
-    module_summary = df.groupby(["indicator_key", "name", "module"]).agg(
+    # First, find the most common name for each indicator_key
+    indicator_names = df.groupby("indicator_key")["name"].agg(
+        lambda x: x.value_counts().index[0]
+    ).reset_index()
+    indicator_names.columns = ["indicator_key", "most_common_name"]
+    
+    # Group by indicator_key and module for summaries
+    module_summary = df.groupby(["indicator_key", "module"]).agg(
         count=("normalized_amount", "count"),
         original_unit=("original_unit", lambda x: ", ".join(sorted(set(x.dropna())))),
         common_unit=("common_unit", "first"),
@@ -155,7 +162,14 @@ def summarize_by_module(df):
         max=("normalized_amount", "max"),
         median=("normalized_amount", "median")
     ).reset_index()
+    
+    # Merge to get the most common name for each indicator_key
+    module_summary = pd.merge(module_summary, indicator_names, on="indicator_key")
+    
+    # Rename columns for output
     module_summary["indicator"] = module_summary["indicator_key"]
+    module_summary["name"] = module_summary["most_common_name"]
+    
     return module_summary[["indicator", "name", "module", "count", "original_unit", "common_unit", "mean", "std", "min", "max", "median"]]
 
 def detect_outliers(df):
@@ -275,19 +289,34 @@ def export_combined_excel(combined, outliers):
     excel_filename = "lcia_exchange_analysis.xlsx"
     files_to_zip.append(excel_filename)
     
-    # Process each indicator/source group
+    # Process each indicator_key/source group
     has_data = False
     
-    for (indicator, source), group in combined.groupby(["indicator_key", "source"]):
+    # Check if we're using the old column names or new ones in outliers DataFrame
+    # This ensures backward compatibility
+    using_old_columns = 'min' in outliers.columns and 'max' in outliers.columns
+    
+    # Define column mappings for compatibility
+    old_to_new = {
+        'min': 'lower_bound',
+        'max': 'upper_bound',
+        'mean': 'normal_mean'
+    }
+    new_to_old = {v: k for k, v in old_to_new.items()}
+    
+    for (indicator_key, source), group in combined.groupby(["indicator_key", "source"]):
         if group.empty:
             continue
             
         has_data = True
         
-        # Create sheet name as Indicator_key (source)
-        sheet_name = f"{indicator} ({source})"
+        # Get most common name for this indicator_key
+        most_common_name = group["name"].value_counts().index[0] if not group["name"].empty else indicator_key
+        
+        # Create sheet name using indicator_key (and source)
+        sheet_name = f"{indicator_key} ({source})"
         if len(sheet_name) > 31:  # Excel sheet name length limit
-            sheet_name = f"{indicator[:28]} ({source})"
+            sheet_name = f"{indicator_key[:28]} ({source})"
             
         sheet = wb.create_sheet(sheet_name)
         
@@ -300,11 +329,11 @@ def export_combined_excel(combined, outliers):
             for c_idx, val in enumerate(row, 1):
                 sheet.cell(row=r_idx, column=c_idx).value = val
         
-        # Generate plots without outliers - use sanitized filenames and include sheet name
-        safe_sheet_name = sanitize_filename(sheet_name)
-        path_box = f"temp_plots/{safe_sheet_name}_boxplot.png"
-        path_hist = f"temp_plots/{safe_sheet_name}_histogram.png"
-        create_filtered_plots(group, indicator, path_box, path_hist)
+        # Generate plots without outliers - use sanitized filenames with indicator_key
+        safe_indicator_key = sanitize_filename(indicator_key)
+        path_box = f"temp_plots/{safe_indicator_key}_{source}_boxplot.png"
+        path_hist = f"temp_plots/{safe_indicator_key}_{source}_histogram.png"
+        create_filtered_plots(group, indicator_key, path_box, path_hist)
         
         # Add the plot files to our zip list
         files_to_zip.append(path_box)
@@ -327,8 +356,8 @@ def export_combined_excel(combined, outliers):
             # If image insertion fails, add a note
             sheet.cell(row=summary_rows, column=1).value = f"Note: Could not insert plots. Error: {str(e)}"
         
-        # Add outliers section after the plots
-        out = outliers[outliers["indicator"] == indicator].sort_values("process_id")
+        # Add outliers section after the plots - filter by indicator_key
+        out = outliers[outliers["indicator"] == indicator_key].sort_values("process_id")
         if not out.empty:
             # Determine where to start the outliers section (below the plots)
             outlier_start_row = summary_rows + 18  # Add enough space for plots
@@ -338,9 +367,17 @@ def export_combined_excel(combined, outliers):
             from openpyxl.styles import Font
             sheet.cell(row=outlier_start_row, column=1).font = Font(bold=True)
             
-            # Add headers for outliers table - include product_name and percentage columns
-            headers = ["process_id", "product_name", "indicator", "module", "unit", "min", "max", "mean", "amount", 
-                     "percent_in_range", "pct_deviation", "comment"]
+            # Add headers for outliers table with appropriate column names
+            if using_old_columns:
+                headers = ["process_id", "product_name", "indicator", "module", "unit", 
+                         "min", "max", "mean", "amount", "percent_in_range", "pct_deviation", 
+                         "normal_process_id", "normal_product_name", "normal_amount", "comment"]
+            else:
+                headers = ["process_id", "product_name", "indicator", "module", "unit", 
+                         "lower_bound", "upper_bound", "normal_min", "normal_max", "normal_mean", "full_dataset_mean", 
+                         "amount", "percent_in_range", "pct_deviation", 
+                         "normal_process_id", "normal_product_name", "normal_amount", "comment"]
+            
             for i, h in enumerate(headers):
                 sheet.cell(row=outlier_start_row + 1, column=i + 1).value = h
                 sheet.cell(row=outlier_start_row + 1, column=i + 1).font = Font(bold=True)
@@ -349,17 +386,27 @@ def export_combined_excel(combined, outliers):
             row_idx = outlier_start_row + 1
             prev_pid = None
             
-            for i, row in out.iterrows():
+            for i, row_data in out.iterrows():
                 # Insert empty row when process_id changes (except for the first process)
-                if row['process_id'] != prev_pid and prev_pid is not None:
+                if row_data['process_id'] != prev_pid and prev_pid is not None:
                     row_idx += 1
                 
                 row_idx += 1
-                prev_pid = row['process_id']
+                prev_pid = row_data['process_id']
                 
-                # Write outlier data
+                # Write outlier data, handling column name differences
                 for j, h in enumerate(headers):
-                    sheet.cell(row=row_idx, column=j + 1).value = row[h]
+                    # Handle column name differences between old and new format
+                    if h in row_data:
+                        value = row_data[h]
+                    elif using_old_columns and h in new_to_old:
+                        value = row_data[new_to_old[h]]
+                    elif not using_old_columns and h in old_to_new:
+                        value = row_data[old_to_new[h]]
+                    else:
+                        value = None  # For columns that don't exist in current data
+                        
+                    sheet.cell(row=row_idx, column=j + 1).value = value
     
     # Create "All Outliers" sheet
     if not outliers.empty:
@@ -379,18 +426,30 @@ def export_combined_excel(combined, outliers):
             ascending=[False, True]
         )
         
-        # Add a header row
-        headers = ["process_id", "product_name", "indicator", "module", "unit", "min", "max", 
-                  "mean", "amount", "percent_in_range", "pct_deviation", "occurrence_count", "comment"]
+        # Define appropriate headers based on columns available
+        if using_old_columns:
+            all_headers = ["process_id", "product_name", "indicator", "module", "unit", 
+                          "min", "max", "mean", "amount", "percent_in_range", "pct_deviation", 
+                          "normal_process_id", "normal_product_name", "normal_amount", 
+                          "occurrence_count", "comment"]
+        else:
+            all_headers = ["process_id", "product_name", "indicator", "module", "unit", 
+                          "lower_bound", "upper_bound", "normal_min", "normal_max", "normal_mean", "full_dataset_mean",
+                          "amount", "percent_in_range", "pct_deviation", 
+                          "normal_process_id", "normal_product_name", "normal_amount", 
+                          "occurrence_count", "comment"]
         
-        for i, h in enumerate(headers):
+        # Add header row
+        for i, h in enumerate(all_headers):
             all_outliers_sheet.cell(row=1, column=i + 1).value = h
             all_outliers_sheet.cell(row=1, column=i + 1).font = Font(bold=True)
         
+        # Filter columns to only include those that exist in the dataframe
+        existing_headers = [h for h in all_headers if h in sorted_outliers.columns]
+        
         # Write all outliers sorted by frequency
-        rows = dataframe_to_rows(sorted_outliers[headers], index=False, header=False)
-        for r_idx, row in enumerate(rows, 2):  # Start from row 2 (after header)
-            for c_idx, val in enumerate(row, 1):
+        for r_idx, row_data in enumerate(sorted_outliers[existing_headers].itertuples(index=False), 2):
+            for c_idx, val in enumerate(row_data, 1):
                 all_outliers_sheet.cell(row=r_idx, column=c_idx).value = val
 
     # If no data was processed, add a message to the default sheet
