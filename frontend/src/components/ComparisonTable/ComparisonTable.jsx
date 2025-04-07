@@ -37,32 +37,76 @@ const ComparisonTable = ({
   // Render nothing if no products
   if (products.length === 0) {
     return (
-      <div className="text-gray-600 p-4 text-center">
+      <div style={{ color: "#aaa", padding: "1rem", textAlign: "center" }}>
         No products available for comparison
       </div>
     );
   }
 
   return (
-    <div className="mb-8">
-      <h3 className="text-xl font-semibold text-blue-600 mb-4">
+    <div style={{ marginBottom: "2rem" }}>
+      <h3
+        style={{
+          fontSize: "1.25rem",
+          fontWeight: 600,
+          color: "#90caf9",
+          marginBottom: "1rem",
+        }}
+      >
         {indicator.name}
       </h3>
 
-      <div className="overflow-x-auto rounded-lg shadow-lg">
-        <table className="w-full border-separate border-spacing-0 text-sm bg-white text-gray-800">
+      <div
+        style={{
+          overflowX: "auto",
+          borderRadius: "8px",
+          boxShadow: "0 4px 6px rgba(0, 0, 0, 0.3)",
+        }}
+      >
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            fontSize: "0.875rem",
+          }}
+        >
           <thead>
             <tr>
-              <th className="p-3 text-left border border-gray-200 bg-blue-50 font-semibold">
+              <th
+                style={{
+                  padding: "0.75rem",
+                  textAlign: "left",
+                  backgroundColor: "#1976d2",
+                  color: "white",
+                  fontWeight: 600,
+                  border: "2px solid #90caf9",
+                }}
+              >
                 Product
               </th>
-              <th className="p-3 text-left border border-gray-200 bg-blue-50 font-semibold">
+              <th
+                style={{
+                  padding: "0.75rem",
+                  textAlign: "left",
+                  backgroundColor: "#1976d2",
+                  color: "white",
+                  fontWeight: 600,
+                  border: "2px solid #90caf9",
+                }}
+              >
                 Unit
               </th>
               {modules.map((module) => (
                 <th
                   key={module}
-                  className="p-3 text-right border border-gray-200 bg-blue-50 font-semibold"
+                  style={{
+                    padding: "0.75rem",
+                    textAlign: "right",
+                    backgroundColor: "#1976d2",
+                    color: "white",
+                    fontWeight: 600,
+                    border: "2px solid #90caf9",
+                  }}
                 >
                   {module}
                 </th>
@@ -76,25 +120,51 @@ const ComparisonTable = ({
               return (
                 <tr
                   key={product.id}
-                  className={`${
-                    index % 2 ? "bg-gray-50" : "bg-white"
-                  } hover:bg-blue-100 transition-colors`}
+                  style={{
+                    backgroundColor: index % 2 ? "#424242" : "#303030",
+                    color: "white",
+                    transition: "background-color 0.2s",
+                  }}
+                  onMouseEnter={(e) =>
+                    (e.currentTarget.style.backgroundColor = "#1e4976")
+                  }
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.backgroundColor =
+                      index % 2 ? "#424242" : "#303030")
+                  }
                 >
-                  <td className="p-3 border border-gray-200 max-w-[200px] truncate">
+                  <td
+                    style={{
+                      padding: "0.75rem",
+                      border: "2px solid #90caf9",
+                      maxWidth: "200px",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
                     {product.name}
                   </td>
-                  <td className="p-3 border border-gray-200">
+                  <td
+                    style={{
+                      padding: "0.75rem",
+                      border: "2px solid #90caf9",
+                    }}
+                  >
                     {indicator.unit || "N/A"}
                   </td>
                   {modules.map((module) => (
                     <td
                       key={module}
-                      className={`p-3 text-right border border-gray-200 
-                        ${
-                          productData.modules[module]
-                            ? ""
-                            : "bg-gray-100 text-gray-500"
-                        }`}
+                      style={{
+                        padding: "0.75rem",
+                        textAlign: "right",
+                        border: "2px solid #90caf9",
+                        backgroundColor: productData.modules[module]
+                          ? ""
+                          : "#1e1e1e",
+                        color: productData.modules[module] ? "white" : "#777",
+                      }}
                     >
                       {formatValue(productData.modules[module])}
                     </td>

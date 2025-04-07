@@ -187,6 +187,13 @@ export const compareProducts = async (productIds, indicators) => {
       indicatorKeys,
     });
 
+    // Log the full data retrieved from the backend
+    console.log(
+      "Full comparison data retrieved from backend:",
+      JSON.stringify(data, null, 2)
+    );
+    console.log("Indicators:", JSON.stringify(data.indicators, null, 2));
+
     return data;
   } catch (error) {
     console.error("Comparison request failed:", error);

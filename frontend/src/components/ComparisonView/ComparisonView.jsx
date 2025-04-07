@@ -105,10 +105,6 @@ const ComparisonView = ({ comparisonData, loading, error }) => {
           across {indicators.length} indicator
           {indicators.length !== 1 ? "s" : ""}
         </p>
-        <p style={{ color: "#aaa", fontSize: "0.9rem", margin: 0 }}>
-          {modules.length} module{modules.length !== 1 ? "s" : ""} found:{" "}
-          {modules.join(", ")}
-        </p>
       </div>
 
       {indicators.map((indicator, index) => (

@@ -133,6 +133,18 @@ async def ask_question(data: QuestionRequest):
                 """, (embedding,))
                 
             rows = cur.fetchall()
+
+            # Write chunks to a file one by one
+            working_directory = os.getcwd()  # Get the current working directory
+            file_path = os.path.join(working_directory, "fetched_chunks.txt")  # Construct the file path
+
+            with open(file_path, "w") as file:
+                for row in rows:
+                    file.write(f"{row[0]}\n\n")  # Write each chunk followed by a newline
+                    logger.info(f"Written chunk to file: {row[0]}")
+
+            logger.info(f"Chunks saved to: {file_path}")
+
         except Exception as db_error:
             logger.exception("Database query error")
             raise HTTPException(
@@ -456,6 +468,7 @@ async def compare_products(data: dict):
         
         # Process LCIA results
         for row in lcia_rows:
+            logger.info(f"[LCIA] {row}")
             product_id, indicator_key, unit, module, amount = row
             
             if indicator_key not in comparison_data:
@@ -475,6 +488,7 @@ async def compare_products(data: dict):
         
         # Process exchange results
         for row in exchange_rows:
+            logger.info(f"[EXCHANGE] {row}")
             product_id, indicator_key, unit, module, amount = row
             
             if indicator_key not in comparison_data:
@@ -498,6 +512,7 @@ async def compare_products(data: dict):
             "indicators": [
                 {
                     "name": indicator_key,
+                    "unit": data.get("unit", ""),
                     "productData": [
                         {
                             "productId": product_id,
