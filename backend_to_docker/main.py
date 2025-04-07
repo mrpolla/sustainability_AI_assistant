@@ -40,6 +40,7 @@ app.add_middleware(
 class QuestionRequest(BaseModel):
     question: str
     documentIds: list[str] = []
+    llmModel: str = "Llama-3.2-1B-Instruct"
 
 class SearchRequest(BaseModel):
     searchTerm: str
@@ -79,6 +80,7 @@ def get_db_connection():
 async def ask_question(data: QuestionRequest):
     question = data.question.strip()
     document_ids = data.documentIds or []
+    llm_model = data.llmModel
     
     # Input validation
     if not question:
@@ -88,6 +90,7 @@ async def ask_question(data: QuestionRequest):
         )
     
     logger.info(f"[INFO] Question received: {question}")
+    logger.info(f"[INFO] Selected LLM: {llm_model}")
     if document_ids:
         logger.info(f"[INFO] Selected documents: {document_ids}")
 
@@ -188,7 +191,20 @@ Answer:"""
 
     # Step 4: Send prompt to inference service
     try:
-        answer = query_llm(prompt)
+        # Model mapping to Ollama models
+        model_map = {
+            "Llama-3.2-1B-Instruct": "llama3.1",
+            "Mistral-7B-Instruct-v0.2": "mistral", 
+            "Llama-3.2-3B": "llama3.1-3b"
+        }
+        
+        # Get the corresponding Ollama model name, default to "mistral"
+        ollama_model = model_map.get(llm_model, "mistral")
+        
+        logger.info(f"Calling LLM with model: {ollama_model}")
+        
+        answer = query_llm(prompt, model_name=ollama_model)
+        
         if not answer or not isinstance(answer, str):
             logger.warning(f"LLM returned invalid answer: {answer}")
             return JSONResponse(

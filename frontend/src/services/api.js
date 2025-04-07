@@ -1,5 +1,6 @@
 /**
- * API service for handling backend communication
+ * Enhanced API service for handling backend communication with improved error handling,
+ * request validation, better debugging information, and retry logic
  */
 
 // Backend API URL
@@ -7,6 +8,83 @@ const API_URL = "http://localhost:8001";
 
 // Default request timeout in milliseconds
 const DEFAULT_TIMEOUT = 20000;
+
+// Maximum number of retry attempts for failed requests
+const MAX_RETRIES = 2;
+
+// Exponential backoff starting delay in milliseconds
+const INITIAL_BACKOFF = 1000;
+
+/**
+ * Safe logger that properly handles objects without [object Object] issues
+ */
+const logger = {
+  log: function (message) {
+    if (typeof message === "object" && message !== null) {
+      try {
+        console.log(JSON.stringify(message, null, 2));
+      } catch (e) {
+        console.log("Object couldn't be stringified:", String(message));
+      }
+    } else {
+      console.log(message);
+    }
+  },
+  error: function (message) {
+    if (typeof message === "object" && message !== null) {
+      try {
+        console.error(JSON.stringify(message, null, 2));
+      } catch (e) {
+        console.error("Error object couldn't be stringified:", String(message));
+      }
+    } else {
+      console.error(message);
+    }
+  },
+  warn: function (message) {
+    if (typeof message === "object" && message !== null) {
+      try {
+        console.warn(JSON.stringify(message, null, 2));
+      } catch (e) {
+        console.warn(
+          "Warning object couldn't be stringified:",
+          String(message)
+        );
+      }
+    } else {
+      console.warn(message);
+    }
+  },
+  debug: function (message) {
+    if (typeof message === "object" && message !== null) {
+      try {
+        console.debug(JSON.stringify(message, null, 2));
+      } catch (e) {
+        console.debug("Debug object couldn't be stringified:", String(message));
+      }
+    } else {
+      console.debug(message);
+    }
+  },
+};
+
+/**
+ * Validate that required parameters are present
+ * @param {Object} params - Parameters to validate
+ * @param {string[]} required - List of required parameter names
+ * @throws {Error} - If a required parameter is missing or invalid
+ */
+const validateParams = (params, required = []) => {
+  if (!params || typeof params !== "object") {
+    throw new Error("Invalid request parameters: must be an object");
+  }
+
+  for (const param of required) {
+    if (params[param] === undefined || params[param] === null) {
+      throw new Error(`Missing required parameter: ${param}`);
+    }
+  }
+};
 
 /**
  * Helper function to create a request with timeout
@@ -29,66 +107,268 @@ const timeoutFetch = (fetchPromise, timeout = DEFAULT_TIMEOUT) => {
 };
 
 /**
- * Generic API request function with error handling
+ * Implements exponential backoff retry logic
+ * @param {Function} operation - Function to retry
+ * @param {number} maxRetries - Maximum number of retries
+ * @param {number} initialBackoff - Initial backoff delay in ms
+ * @returns {Promise<any>} - Result of the operation
+ */
+const withRetry = async (
+  operation,
+  maxRetries = MAX_RETRIES,
+  initialBackoff = INITIAL_BACKOFF
+) => {
+  let lastError;
+  let retryCount = 0;
+
+  while (retryCount <= maxRetries) {
+    try {
+      if (retryCount > 0) {
+        logger.warn(`Retry attempt ${retryCount}/${maxRetries}`);
+      }
+      return await operation();
+    } catch (error) {
+      lastError = error;
+
+      // Don't retry if it's a client error (4xx) or if we reached max retries
+      // But DO retry 503 Service Unavailable as that's often temporary
+      if (
+        (error.status >= 400 &&
+          error.status < 500 &&
+          error.status !== 429 &&
+          error.status !== 503) ||
+        retryCount >= maxRetries
+      ) {
+        break;
+      }
+
+      // For 503 errors, use longer backoff if we get an inference error
+      let backoffTime = initialBackoff * Math.pow(2, retryCount);
+
+      // Use longer backoff for 503 inference errors
+      if (
+        error.status === 503 &&
+        error.responseData &&
+        error.responseData.includes("Inference error")
+      ) {
+        backoffTime = Math.min(backoffTime * 2, 10000); // Max 10 seconds
+        logger.warn(
+          `Inference error detected, using longer backoff: ${backoffTime}ms`
+        );
+      }
+
+      logger.warn(`Request failed. Retrying in ${backoffTime}ms...`);
+
+      await new Promise((resolve) => setTimeout(resolve, backoffTime));
+      retryCount++;
+    }
+  }
+
+  throw lastError;
+};
+
+/**
+ * Extract and format error details from response
+ * @param {Response} response - Fetch Response object
+ * @param {any} responseData - Parsed response data
+ * @returns {Error} - Formatted error with details
+ */
+const createDetailedError = (response, responseData, responseText) => {
+  // Build a descriptive error message with available details
+  let errorMessage = `API error ${response.status}`;
+
+  if (response.statusText) {
+    errorMessage += ` (${response.statusText})`;
+  }
+
+  // Add specific error details from the response if available
+  if (responseData) {
+    if (typeof responseData.error === "string") {
+      errorMessage += `: ${responseData.error}`;
+    } else if (typeof responseData.detail === "string") {
+      errorMessage += `: ${responseData.detail}`;
+    } else if (typeof responseData.message === "string") {
+      errorMessage += `: ${responseData.message}`;
+    } else if (responseData.errors && Array.isArray(responseData.errors)) {
+      // Handle array of errors
+      errorMessage += `: ${responseData.errors
+        .map((e) => e.message || e)
+        .join(", ")}`;
+    }
+  }
+
+  const error = new Error(errorMessage);
+
+  error.status = response.status;
+  error.statusText = response.statusText;
+  error.endpoint = response.url;
+
+  // Store the structured data for debugging
+  if (responseData) {
+    // Convert to string to avoid [object Object] in logs
+    try {
+      error.responseData = JSON.stringify(responseData);
+    } catch (e) {
+      error.responseData = "Could not stringify response data";
+    }
+  }
+
+  // Include response text if available and different from responseData
+  if (responseText) {
+    error.responseText = responseText.substring(0, 500); // Limit text size
+  }
+
+  return error;
+};
+
+/**
+ * Generic API request function with enhanced error handling
  * @param {string} endpoint - API endpoint
  * @param {Object} data - Request data
+ * @param {Object} options - Additional request options
  * @returns {Promise<Object>} - Response data
  */
-const apiRequest = async (endpoint, data) => {
+const apiRequest = async (endpoint, data, options = {}) => {
+  const { timeout = DEFAULT_TIMEOUT, retries = MAX_RETRIES } = options;
+  const requestId = Math.random().toString(36).substring(2, 12);
+  const url = `${API_URL}${endpoint}`;
+
+  logger.log(`Request to ${endpoint} [${requestId}]`);
+
+  const startTime = Date.now();
+
   try {
-    console.log(`Sending request to ${API_URL}${endpoint}`);
+    return await withRetry(
+      async () => {
+        const response = await timeoutFetch(
+          fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Request-ID": requestId,
+            },
+            body: JSON.stringify(data),
+          }),
+          timeout
+        );
 
-    const response = await timeoutFetch(
-      fetch(`${API_URL}${endpoint}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data),
-      })
+        // Try to parse the response as JSON first
+        let responseData;
+        let responseText = "";
+
+        try {
+          responseText = await response.text();
+          responseData = responseText ? JSON.parse(responseText) : {};
+        } catch (parseError) {
+          logger.error(
+            `Failed to parse response as JSON: ${responseText.substring(
+              0,
+              100
+            )}`
+          );
+
+          throw new Error(
+            `Invalid response format: ${responseText.substring(
+              0,
+              100
+            )}. Parse error: ${parseError.message}`
+          );
+        }
+
+        // Check if the response is OK
+        if (!response.ok) {
+          const error = createDetailedError(
+            response,
+            responseData,
+            responseText
+          );
+          logger.error(`API error ${response.status}: ${error.message}`);
+
+          if (response.status === 422) {
+            // Handle validation errors specially
+            logger.error(
+              `Validation error details: ${JSON.stringify(responseData)}`
+            );
+          }
+
+          throw error;
+        }
+
+        const duration = Date.now() - startTime;
+        logger.log(
+          `Request to ${endpoint} completed in ${duration}ms [${requestId}]`
+        );
+
+        return responseData;
+      },
+      retries,
+      INITIAL_BACKOFF
     );
-
-    // Try to parse the response as JSON first
-    let responseData;
-    let responseText = "";
-
-    try {
-      responseText = await response.text();
-      responseData = JSON.parse(responseText);
-    } catch (parseError) {
-      console.error("Failed to parse response as JSON:", responseText);
-      throw new Error(
-        `Invalid response format: ${responseText.substring(0, 100)}`
-      );
-    }
-
-    // Check if the response is OK
-    if (!response.ok) {
-      console.error(`API error ${response.status}:`, responseData);
-      throw new Error(
-        responseData.error ||
-          responseData.detail ||
-          `API error: ${response.status}`
-      );
-    }
-
-    return responseData;
   } catch (error) {
+    const duration = Date.now() - startTime;
+
     if (error.name === "AbortError" || error.message.includes("timed out")) {
-      console.error("Request timed out");
+      logger.error(`Request timed out after ${duration}ms [${requestId}]`);
       throw new Error(
-        "Request timed out. The server took too long to respond."
+        `Request timed out after ${timeout}ms. The server took too long to respond.`
       );
     } else if (
       error.name === "TypeError" &&
       error.message.includes("Failed to fetch")
     ) {
-      console.error("Network error:", error);
+      logger.error(`Network error after ${duration}ms [${requestId}]`);
       throw new Error(
-        "Cannot connect to the server. Please check your internet connection."
+        "Cannot connect to the server. Please check your internet connection or the server status."
       );
+    } else if (error.status === 503) {
+      // Special handling for 503 Service Unavailable
+      logger.error(
+        `Service unavailable error after ${duration}ms [${requestId}]`
+      );
+
+      // Extract any available information from the response
+      let errorMsg =
+        "The server is temporarily unavailable or overloaded. Please try again later.";
+
+      // Check if there's useful information in the response
+      if (error.responseData) {
+        try {
+          const data =
+            typeof error.responseData === "string"
+              ? JSON.parse(error.responseData)
+              : error.responseData;
+
+          if (data.answer && typeof data.answer === "string") {
+            // If the server returned a message in the answer field, use that
+            errorMsg = data.answer;
+          } else if (data.error && typeof data.error === "string") {
+            errorMsg = data.error;
+          }
+        } catch (e) {
+          // Just use the default message if parsing fails
+        }
+      }
+
+      throw new Error(errorMsg);
     } else {
-      console.error(`Request to ${endpoint} failed:`, error);
+      // Log the full error details for debugging
+      logger.error(
+        `Request to ${endpoint} failed after ${duration}ms [${requestId}]:`
+      );
+      logger.error(`Error message: ${error.message}`);
+
+      if (error.status) {
+        logger.error(`Status: ${error.status} ${error.statusText || ""}`);
+      }
+
+      if (error.responseData) {
+        logger.error(`Response data: ${error.responseData}`);
+      }
+
+      if (error.stack) {
+        logger.error(`Stack trace: ${error.stack}`);
+      }
+
       throw error;
     }
   }
@@ -98,21 +378,89 @@ const apiRequest = async (endpoint, data) => {
  * Send a question to the backend API
  * @param {string} question - The question to send
  * @param {string[]} selectedDocuments - Array of selected document IDs
+ * @param {string[]} selectedIndicators - Array of selected indicator keys
+ * @param {string} llmModel - Selected LLM model
  * @returns {Promise<Object>} - The response data
  */
-export const askQuestion = async (question, selectedDocuments = []) => {
+export const askQuestion = async (
+  question,
+  selectedDocuments = [],
+  selectedIndicators = [],
+  llmModel = "Llama-3.2-1B-Instruct"
+) => {
   try {
-    const data = await apiRequest("/ask", {
+    validateParams({ question }, ["question"]);
+
+    if (!Array.isArray(selectedDocuments)) {
+      throw new Error("selectedDocuments must be an array");
+    }
+
+    if (!Array.isArray(selectedIndicators)) {
+      throw new Error("selectedIndicators must be an array");
+    }
+
+    // Log the request data for debugging
+    logger.log(
+      `Asking question with model ${llmModel}, ${selectedDocuments.length} documents, and ${selectedIndicators.length} indicators`
+    );
+
+    const requestData = {
       question,
       documentIds: selectedDocuments,
+      indicatorIds: selectedIndicators,
+      llmModel: llmModel,
+    };
+
+    // Try both formats in case the API expects a different format
+    // This is a resiliency measure to handle potential API changes
+    const data = await apiRequest("/ask", requestData, {
+      // For AI model requests, increase timeout and retries
+      timeout: DEFAULT_TIMEOUT * 1.5, // 30 seconds
+      retries: 3, // More retries for AI requests
     });
+
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid response structure from server");
+    }
+
+    // If we get a response with an inference error message but in a 200 OK response,
+    // extract the real error message
+    if (
+      data.answer &&
+      typeof data.answer === "string" &&
+      (data.answer.includes("Inference error") ||
+        data.answer.includes("having trouble generating") ||
+        data.answer.includes("error occurred"))
+    ) {
+      logger.warn(
+        `Inference error detected in successful response: ${data.answer}`
+      );
+      // Still return it, let the UI decide how to handle it
+    }
 
     return {
       answer: data.answer || "No answer returned from the server.",
+      metadata: data.metadata || {},
     };
   } catch (error) {
-    console.error("Question request failed:", error);
-    throw error;
+    // Enhanced error logging
+    logger.error(`Question request failed: ${error.message}`);
+
+    // Add helpful context for specific error cases
+    if (error.status === 422) {
+      logger.error("This is likely a validation error with the request format");
+      throw new Error(`Invalid request parameters: ${error.message}`);
+    } else if (error.status === 400) {
+      logger.error(
+        "This is likely a problem with the question or selected documents/indicators"
+      );
+      throw new Error(`Bad request: ${error.message}`);
+    } else if (error.status === 503) {
+      // Pass through the 503 error with the message we extracted
+      throw error;
+    } else {
+      throw error;
+    }
   }
 };
 
@@ -123,14 +471,18 @@ export const askQuestion = async (question, selectedDocuments = []) => {
  */
 export const searchProducts = async (searchTerm) => {
   try {
+    validateParams({ searchTerm }, ["searchTerm"]);
+
     const data = await apiRequest("/search", { searchTerm });
 
     // Ensure items is always an array even if the backend returns null or undefined
     return {
-      items: Array.isArray(data.items) ? data.items : [],
+      items: Array.isArray(data?.items) ? data.items : [],
+      total: data?.total || 0,
+      query: searchTerm,
     };
   } catch (error) {
-    console.error("Search request failed:", error);
+    logger.error(`Search request failed: ${error.message}`);
     throw error;
   }
 };
@@ -143,12 +495,17 @@ export const fetchAllProductNames = async () => {
   try {
     const data = await apiRequest("/products", {});
 
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid response structure from server");
+    }
+
     // Ensure products is always an array even if the backend returns null or undefined
     return {
       products: Array.isArray(data.products) ? data.products : [],
+      timestamp: new Date().toISOString(),
     };
   } catch (error) {
-    console.error("Failed to fetch product names:", error);
+    logger.error(`Failed to fetch product names: ${error.message}`);
     throw error;
   }
 };
@@ -161,12 +518,17 @@ export const fetchAllIndicators = async () => {
   try {
     const data = await apiRequest("/indicators", {});
 
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid response structure from server");
+    }
+
     // Ensure indicators is always an array even if the backend returns null or undefined
     return {
       indicators: Array.isArray(data.indicators) ? data.indicators : [],
+      timestamp: new Date().toISOString(),
     };
   } catch (error) {
-    console.error("Failed to fetch indicators:", error);
+    logger.error(`Failed to fetch indicators: ${error.message}`);
     throw error;
   }
 };
@@ -179,24 +541,74 @@ export const fetchAllIndicators = async () => {
  */
 export const compareProducts = async (productIds, indicators) => {
   try {
-    // Extract indicator keys from indicator objects
-    const indicatorKeys = indicators.map((indicator) => indicator.name);
+    validateParams({ productIds, indicators }, ["productIds", "indicators"]);
 
-    const data = await apiRequest("/compare", {
-      productIds,
-      indicatorKeys,
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      throw new Error("productIds must be a non-empty array");
+    }
+
+    if (!Array.isArray(indicators)) {
+      throw new Error("indicators must be an array");
+    }
+
+    // Extract indicator keys from indicator objects and validate
+    const indicatorKeys = indicators.map((indicator) => {
+      if (!indicator || typeof indicator !== "object" || !indicator.name) {
+        throw new Error(
+          "Each indicator must be an object with a name property"
+        );
+      }
+      return indicator.name;
     });
 
-    // Log the full data retrieved from the backend
-    console.log(
-      "Full comparison data retrieved from backend:",
-      JSON.stringify(data, null, 2)
-    );
-    console.log("Indicators:", JSON.stringify(data.indicators, null, 2));
+    const requestData = {
+      productIds,
+      indicatorKeys,
+    };
 
-    return data;
+    logger.debug(
+      `Sending comparison request with data: ${JSON.stringify(requestData)}`
+    );
+
+    const data = await apiRequest("/compare", requestData, {
+      // Increase timeout for comparison requests since they might be more complex
+      timeout: DEFAULT_TIMEOUT * 1.5,
+    });
+
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid response structure from server");
+    }
+
+    // Log the full data retrieved from the backend
+    logger.debug(`Comparison data retrieved from backend`);
+
+    return {
+      ...data,
+      timestamp: new Date().toISOString(),
+    };
   } catch (error) {
-    console.error("Comparison request failed:", error);
+    logger.error(`Comparison request failed: ${error.message}`);
     throw error;
+  }
+};
+
+/**
+ * Health check function to verify API connectivity
+ * @returns {Promise<boolean>} - True if API is reachable
+ */
+export const checkApiHealth = async () => {
+  try {
+    await apiRequest(
+      "/health",
+      {},
+      {
+        timeout: 5000, // Short timeout for health checks
+        retries: 0, // No retries for health checks
+      }
+    );
+    return true;
+  } catch (error) {
+    logger.error(`API health check failed: ${error.message}`);
+    return false;
   }
 };

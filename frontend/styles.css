@@ -28,3 +28,38 @@ body {
 }
 
 /* Component-specific dark theme overrides can be added here */
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background-color: #1e1e1e; /* slightly lighter than body */
+  border: 1px solid #333;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.05);
+}
+
+th,
+td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid #333;
+}
+
+th {
+  background-color: #2c2c2c;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+tr:nth-child(even) {
+  background-color: #181818;
+}
+
+tr:hover {
+  background-color: #2a2a2a;
+}
+
+tr {
+  transition: background-color 0.3s ease;
+}
