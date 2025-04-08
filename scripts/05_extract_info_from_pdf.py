@@ -10,8 +10,7 @@ pdf_inputs = {
         "path": Path("books_and_isos_reference/Books/dgnb-quality-standard-for-circularity-indices-for-buildings_check.pdf"),
         "crop_top": 0.09,
         "crop_bottom": 0.98
-    },
-    # Add other PDFs as needed
+    }
 }
 
 # Output directories
@@ -24,174 +23,225 @@ jsonl_output = output_dir / "text_blocks.jsonl"
 metadata_output = output_dir / "tables_metadata.json"
 table_metadata = []
 
-def extract_complete_blocks(pdf, crop_top, crop_bottom):
-    """Extract text as complete paragraphs and headings, preserving structure"""
+def overlaps_image(x0, top, x1, bottom, image_boxes, padding=5):
+    for ix0, itop, ix1, ibottom in image_boxes:
+        if not (x1 < ix0 - padding or x0 > ix1 + padding or bottom < itop - padding or top > ibottom + padding):
+            return True
+    return False
+
+def extract_blocks_with_context(pdf, crop_top, crop_bottom):
+    """Extract text blocks with better context awareness, avoiding text inside images"""
     all_blocks = []
+    
+    section_pattern = re.compile(r'^\s*(\d+(\.\d+)*)\s+(.*?)\s*$')
+    bullet_pattern = re.compile(r'^\s*[▪•■◆◇○●\-*]\s+')
+    subsection_pattern = re.compile(r'^([A-Z][a-zA-Z\s]{2,20}):$')
     
     for page_num, page in enumerate(pdf.pages):
         width, height = page.width, page.height
         cropped = page.within_bbox((0, height * crop_top, width, height * crop_bottom))
-        
-        # Extract all text
-        text = cropped.extract_text(x_tolerance=3, y_tolerance=3)
-        if not text:
+        if not cropped:
             continue
-            
-        # Get font information for heading detection
+        
+        text = cropped.extract_text()
         chars = cropped.chars
         if not chars:
             continue
-            
-        # Calculate average font size
+
+        image_boxes = [
+            (img["x0"], img["top"], img["x1"], img["bottom"]) for img in cropped.images
+        ]
+
         font_sizes = [char['size'] for char in chars if 'size' in char]
         avg_font_size = sum(font_sizes) / len(font_sizes) if font_sizes else 10
         
-        # Create line objects with positions and font info
         lines = []
-        char_by_line = {}
-        
+        line_groups = {}
         for char in chars:
-            # Round y-position to group into lines
             y_key = round(char['top'], 1)
-            if y_key not in char_by_line:
-                char_by_line[y_key] = []
-            char_by_line[y_key].append(char)
-        
-        # Process each line
-        sorted_y_positions = sorted(char_by_line.keys())
-        for y_pos in sorted_y_positions:
-            line_chars = char_by_line[y_pos]
-            sorted_chars = sorted(line_chars, key=lambda c: c['x0'])
-            
-            # Extract font stats
-            line_font_sizes = [c['size'] for c in sorted_chars if 'size' in c]
-            avg_line_font = sum(line_font_sizes) / len(line_font_sizes) if line_font_sizes else avg_font_size
-            
-            # Check for bold text
-            has_bold = any('Bold' in c.get('fontname', '') or 'bold' in c.get('fontname', '').lower() 
-                          for c in sorted_chars)
-            
-            # Reconstruct line text
-            line_text = ''.join(c['text'] for c in sorted_chars)
-            if not line_text.strip():
+            if y_key not in line_groups:
+                line_groups[y_key] = []
+            line_groups[y_key].append(char)
+
+        for y_pos in sorted(line_groups.keys()):
+            chars_in_line = sorted(line_groups[y_pos], key=lambda c: c['x0'])
+            if not chars_in_line:
                 continue
-                
+            
+            x0 = min(c['x0'] for c in chars_in_line)
+            x1 = max(c['x1'] for c in chars_in_line)
+            top = min(c['top'] for c in chars_in_line)
+            bottom = max(c['bottom'] for c in chars_in_line)
+
+            if overlaps_image(x0, top, x1, bottom, image_boxes):
+                continue  # Skip line inside image
+
+            line_text = ''.join(c['text'] for c in chars_in_line).strip()
+            if not line_text:
+                continue
+
+            line_font_sizes = [c['size'] for c in chars_in_line if 'size' in c]
+            line_font_size = sum(line_font_sizes) / len(line_font_sizes) if line_font_sizes else avg_font_size
+            bold_chars = sum(1 for c in chars_in_line if 'Bold' in c.get('fontname', '').split('-')[-1])
+            is_bold = bold_chars > len(chars_in_line) * 0.5
+            left_margin = min(c['x0'] for c in chars_in_line)
+
             lines.append({
-                'text': line_text.strip(),
-                'y': y_pos,
-                'font_size': avg_line_font,
-                'is_bold': has_bold,
+                'text': line_text,
+                'font_size': line_font_size,
+                'is_bold': is_bold,
+                'left_margin': left_margin,
+                'y_pos': y_pos,
+                'chars': chars_in_line
+            })
+
+        blocks = []
+        current_text = ""
+        current_label = ""
+        current_level = 0
+        active_section = None
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+            text = line['text'].strip()
+            if not text:
+                i += 1
+                continue
+
+            section_match = section_pattern.match(text)
+            if section_match:
+                if current_text:
+                    blocks.append({
+                        'text': current_text,
+                        'label': current_label,
+                        'level': current_level,
+                        'page': page_num + 1
+                    })
+                    current_text = ""
+
+                section_num = section_match.group(1)
+                section_title = section_match.group(3)
+                level = len(section_num.split('.'))
+
+                blocks.append({
+                    'text': text,
+                    'label': 'chapter' if level == 1 else 'section',
+                    'level': level,
+                    'page': page_num + 1
+                })
+
+                active_section = {
+                    'text': text,
+                    'level': level
+                }
+
+                i += 1
+
+            elif bullet_pattern.match(text):
+                if current_text:
+                    blocks.append({
+                        'text': current_text,
+                        'label': current_label,
+                        'level': current_level,
+                        'page': page_num + 1
+                    })
+                    current_text = ""
+
+                bullet_text = text
+                i += 1
+                while i < len(lines) and bullet_pattern.match(lines[i]['text'].strip()):
+                    bullet_text += "\n" + lines[i]['text'].strip()
+                    i += 1
+
+                level = active_section['level'] + 1 if active_section else 1
+                blocks.append({
+                    'text': bullet_text,
+                    'label': 'bullet_list',
+                    'level': level,
+                    'page': page_num + 1
+                })
+
+            elif subsection_pattern.match(text) and line['is_bold']:
+                if current_text:
+                    blocks.append({
+                        'text': current_text,
+                        'label': current_label,
+                        'level': current_level,
+                        'page': page_num + 1
+                    })
+                    current_text = ""
+
+                level = active_section['level'] + 1 if active_section else 2
+                blocks.append({
+                    'text': text,
+                    'label': 'subsection',
+                    'level': level,
+                    'page': page_num + 1
+                })
+
+                i += 1
+
+            elif line['font_size'] > avg_font_size * 1.2:
+                if current_text:
+                    blocks.append({
+                        'text': current_text,
+                        'label': current_label,
+                        'level': current_level,
+                        'page': page_num + 1
+                    })
+                    current_text = ""
+
+                level = 1 if line['font_size'] > avg_font_size * 1.3 else 2
+                blocks.append({
+                    'text': text,
+                    'label': 'chapter' if level == 1 else 'section',
+                    'level': level,
+                    'page': page_num + 1
+                })
+
+                active_section = {
+                    'text': text,
+                    'level': level
+                }
+
+                i += 1
+
+            else:
+                if current_text:
+                    ends_with_sentence = bool(re.search(r'[.!?:]$', current_text))
+                    same_indentation = abs(line['left_margin'] - lines[i - 1]['left_margin']) < 15
+
+                    if not ends_with_sentence and same_indentation:
+                        current_text += " " + text
+                    else:
+                        blocks.append({
+                            'text': current_text,
+                            'label': current_label,
+                            'level': current_level,
+                            'page': page_num + 1
+                        })
+                        current_text = text
+                        current_label = 'paragraph'
+                        current_level = active_section['level'] + 1 if active_section else 1
+                else:
+                    current_text = text
+                    current_label = 'paragraph'
+                    current_level = active_section['level'] + 1 if active_section else 1
+
+                i += 1
+
+        if current_text:
+            blocks.append({
+                'text': current_text,
+                'label': current_label,
+                'level': current_level,
                 'page': page_num + 1
             })
-        
-        # Now group lines into complete paragraphs and headings
-        blocks = []
-        current_block = None
-        
-        for i, line in enumerate(lines):
-            # Determine if this line is likely a heading
-            is_heading = False
-            
-            # Heading indicators:
-            # 1. Larger font size
-            # 2. Bold text
-            # 3. Numbering patterns at start (1.2, etc.)
-            # 4. Short line (but not empty)
-            # 5. Followed by empty line or smaller font
-            
-            if line['text'].strip():
-                # Check font size compared to page average
-                font_ratio = line['font_size'] / avg_font_size
-                
-                # Check for section numbering patterns
-                has_numbering = bool(re.match(r'^\s*\d+(\.\d+)*\s+\S', line['text']))
-                
-                # Check word count
-                word_count = len(line['text'].split())
-                
-                # Check if next line is empty or has smaller font
-                next_line_gap = False
-                if i < len(lines) - 1:
-                    next_line = lines[i + 1]
-                    next_font_ratio = next_line['font_size'] / avg_font_size
-                    line_gap = next_line['y'] - line['y']
-                    next_line_gap = line_gap > 1.5 * (next_line['font_size'] / 72 * 96)  # Approx line height
-                
-                # Determine if this is a heading
-                is_heading = (
-                    (font_ratio > 1.15 and word_count < 15) or
-                    (has_numbering and word_count < 20) or
-                    (line['is_bold'] and word_count < 12) or
-                    (font_ratio > 1.05 and next_line_gap and word_count < 20)
-                )
-                
-                # Special case: title followed by subtitle
-                is_continuation_of_title = (
-                    current_block and 
-                    current_block['label'] in ('title', 'heading') and
-                    font_ratio > 1.1 and 
-                    not line['text'].endswith('.')
-                )
-                
-                # Bullets and lists (often not headings)
-                is_bullet_point = bool(re.match(r'^\s*[\u2022\u25aa\u25A0\u25CF\u25E6\u2043\u2219•■◦*-]\s+', line['text']))
-                if is_bullet_point and not has_numbering:
-                    is_heading = False
-            
-            # Start a new block or continue the current one
-            if is_heading or is_continuation_of_title:
-                label = 'title' if font_ratio > 1.25 or (is_continuation_of_title and current_block['label'] == 'title') else 'heading'
-                
-                # If this is a continuation of a title, append to it
-                if is_continuation_of_title and current_block:
-                    current_block['text'] += ' ' + line['text']
-                    continue
-                
-                # Otherwise create a new heading block
-                if current_block:
-                    blocks.append(current_block)
-                
-                current_block = {
-                    'text': line['text'],
-                    'label': label,
-                    'page': page_num + 1
-                }
-            else:
-                # Regular paragraph text
-                if current_block and current_block['label'] == 'paragraph':
-                    # Check if this is a continuation of the same paragraph
-                    # Heuristic: if previous line doesn't end with period and this isn't indented
-                    prev_text = current_block['text']
-                    ends_with_sentence = bool(re.search(r'[.!?:]$', prev_text))
-                    
-                    if not ends_with_sentence:
-                        # This is a continuation of the previous paragraph
-                        current_block['text'] += ' ' + line['text']
-                    else:
-                        # This is a new paragraph
-                        blocks.append(current_block)
-                        current_block = {
-                            'text': line['text'],
-                            'label': 'paragraph',
-                            'page': page_num + 1
-                        }
-                else:
-                    # Start a new paragraph
-                    if current_block:
-                        blocks.append(current_block)
-                    
-                    current_block = {
-                        'text': line['text'],
-                        'label': 'paragraph',
-                        'page': page_num + 1
-                    }
-        
-        # Don't forget the last block
-        if current_block:
-            blocks.append(current_block)
-        
+
+        blocks = [b for b in blocks if b['text']]
         all_blocks.extend(blocks)
-    
+
     return all_blocks
 
 with open(jsonl_output, 'w', encoding='utf-8') as jsonl_file:
@@ -205,10 +255,7 @@ with open(jsonl_output, 'w', encoding='utf-8') as jsonl_file:
             continue
 
         with pdfplumber.open(pdf_path) as pdf:
-            # Extract complete paragraphs and headings
-            blocks = extract_complete_blocks(pdf, crop_top, crop_bottom)
-            
-            # Write blocks to JSONL
+            blocks = extract_blocks_with_context(pdf, crop_top, crop_bottom)
             for block in blocks:
                 jsonl_file.write(json.dumps({
                     "type": "text",
@@ -216,21 +263,20 @@ with open(jsonl_output, 'w', encoding='utf-8') as jsonl_file:
                     "page": block['page'],
                     "text": block['text'],
                     "label": block['label'],
+                    "level": block['level'],
                     "crop_top": crop_top,
                     "crop_bottom": crop_bottom
                 }) + "\n")
-            
-            # Extract tables
+
             for page_num, page in enumerate(pdf.pages):
                 width, height = page.width, page.height
                 cropped = page.within_bbox((0, height * crop_top, width, height * crop_bottom))
-                
-                tables = cropped.extract_tables()
+
+                tables = cropped.extract_tables() if cropped else []
                 for table_index, table in enumerate(tables):
-                    # Filter out empty or invalid tables
                     if not table or not any(any(cell for cell in row if cell) for row in table):
                         continue
-                        
+
                     table_filename = f"{pdf_path.stem}_table_pg{page_num+1}_{table_index+1}.csv"
                     table_path = table_dir / table_filename
 
@@ -248,8 +294,7 @@ with open(jsonl_output, 'w', encoding='utf-8') as jsonl_file:
                         "crop_bottom": crop_bottom
                     })
 
-# Save table metadata
 with open(metadata_output, 'w', encoding='utf-8') as f:
     json.dump(table_metadata, f, indent=2)
 
-print(f"✅ Enhanced paragraph extraction complete.\n- Text blocks saved to: {jsonl_output}\n- Tables saved to: {table_dir}\n- Table metadata: {metadata_output}")
+print(f"✅ Enhanced document extraction complete.\n- Text blocks saved to: {jsonl_output}\n- Tables saved to: {table_dir}\n- Table metadata: {metadata_output}")
