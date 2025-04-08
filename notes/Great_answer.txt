@@ -2,7 +2,7 @@ What are sliding doors:
             ORDER BY embedding <#> %s::vector
 Answer:
 
- The data provided appears to be a Life Cycle Assessment (LCA) of an Automatic Sliding Door 50 for the year 2021. Here are some key points from the data:
+The data provided appears to be a Life Cycle Assessment (LCA) of an Automatic Sliding Door 50 for the year 2021. Here are some key points from the data:
 
 - Classification: Components and products > Doors, gates, shutters and windows > Automatic sliding door
 - Year: 2021

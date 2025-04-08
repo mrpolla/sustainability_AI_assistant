@@ -47,7 +47,39 @@ Was able to salvage the code, database was not affected but had to free up a lot
   - MUST CREATE columns normalized amound and normalized unit
 - getting density information from other file
 
---------------------
+16. Created comparison components in frontend:
+- select products, gets list.
+- select indicators
+- choose "compare"
+- gets tables showing comparison for productor for each indicators
+
+17. Prepare runpod with ollama in a way that I can switch models for benchmarking.
+Installing ollama in runpod.io
+ollama pull mistral
+ollama pull llama3
+ollama pull gemma:2b
+(ollama pull qwen:1.8b)
+(ollama pull phi3:mini)
+ollama run mistral
+
+18. Text extraction from pdf with pdfplumber
+- gets text, differentiate between title, sections, etc...
+- removes headers and footers
+- saves tables in a csv in a way they can be referenced and embedded later
+
+19. Text chunking for embedding:
+- 3-4 sentences to begin with
+
+
+
+
+
+
+
+
+
+
+
 
 
 SELECT table_schema, table_name, column_name, data_type

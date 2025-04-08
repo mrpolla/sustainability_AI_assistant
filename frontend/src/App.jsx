@@ -17,13 +17,9 @@ import {
 } from "./services/api";
 
 // Constants
-const LLM_OPTIONS = [
-  "Llama-3.2-1B-Instruct",
-  "Mistral-7B-Instruct-v0.2",
-  "Llama-3.2-3B",
-];
+const LLM_OPTIONS = ["mistral", "llama3", "gemma:2b", "qwen:1.8b", "phi3:mini"];
 
-const DEFAULT_LLM = "Llama-3.2-1B-Instruct";
+const DEFAULT_LLM = "mistral";
 
 function App() {
   // State for products

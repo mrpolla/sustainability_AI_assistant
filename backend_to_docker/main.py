@@ -191,19 +191,9 @@ Answer:"""
 
     # Step 4: Send prompt to inference service
     try:
-        # Model mapping to Ollama models
-        model_map = {
-            "Llama-3.2-1B-Instruct": "llama3.1",
-            "Mistral-7B-Instruct-v0.2": "mistral", 
-            "Llama-3.2-3B": "llama3.1-3b"
-        }
         
-        # Get the corresponding Ollama model name, default to "mistral"
-        ollama_model = model_map.get(llm_model, "mistral")
-        
-        logger.info(f"Calling LLM with model: {ollama_model}")
-        
-        answer = query_llm(prompt, model_name=ollama_model)
+        logger.info(f"Calling LLM with model key: {llm_model}")
+        answer = query_llm(prompt, model_name=llm_model)
         
         if not answer or not isinstance(answer, str):
             logger.warning(f"LLM returned invalid answer: {answer}")

@@ -1,46 +1,54 @@
 import requests
 import time
+import os
+from dotenv import load_dotenv
 
-OLLAMA_API_URL = "https://3nxdf6233n8u8w-8000.proxy.runpod.net/api/generate"
+# Load env vars
+load_dotenv()
+
+# You can configure this via .env or directly here
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL")
+print(f"[DEBUG] Using OLLAMA_API_URL: {OLLAMA_API_URL}")
+# Optional: limit to a few verified models
+MODEL_MAPPING = {
+    "mistral": "mistral",
+    "llama3": "llama3",
+    "gemma:2b": "gemma:2b",
+    "qwen:1.8b": "qwen:1.8b",
+    "phi3:mini": "phi3:mini",
+}
 
 def query_llm(prompt: str, model_name: str = "mistral") -> str:
     """
-    Query an LLM with the given prompt using the specified model.
+    Send a prompt to Ollama and return the response.
     
-    :param prompt: The input prompt for the LLM
-    :param model_name: The name of the model to use (mapped to Ollama model)
-    :return: The generated response from the LLM
+    :param prompt: The user question or input.
+    :param model_name: Optional; one of the mapped model keys.
+    :return: LLM response string.
     """
-    # Model mapping to Ollama models
-    model_mapping = {
-        "llama3.1": "llama3.1",
-        "mistral": "mistral",
-        "llama3.1-3b": "llama3.1-3b",
-        # Frontend model names mapped to Ollama models
-        "Llama-3.2-1B-Instruct": "llama3.1",
-        "Mistral-7B-Instruct-v0.2": "mistral", 
-        "Llama-3.2-3B": "llama3.1-3b"
-    }
-    
-    # Normalize the model name
-    normalized_model = model_mapping.get(model_name, "mistral")
+    model = MODEL_MAPPING.get(model_name.lower(), "mistral")
+
     try:
         start_time = time.time()
         response = requests.post(
             OLLAMA_API_URL,
             json={
-                "model": normalized_model,
+                "model": model,
                 "prompt": prompt,
-                "stream": False,
+                "stream": False
             },
-            timeout=600
+            timeout=60
         )
         duration = time.time() - start_time
-        print(f"[INFO] LLM response time: {duration:.2f} seconds")
-        print(f"[DEBUG] Raw response text: {response.text}")
+        print(f"[INFO] Model: {model} | Response Time: {duration:.2f}s")
+
+        if response.status_code != 200:
+            print(f"[ERROR] Status Code: {response.status_code} | {response.text}")
+            raise RuntimeError("Ollama returned non-200 response.")
 
         result = response.json()
-        return result.get("response", "No answer returned.")
+        return result.get("response", "[No response returned]")
+    
     except Exception as e:
-        print(f"[ERROR] Inference error: {e}")
-        raise RuntimeError(f"Inference error: {e}")
+        print(f"[ERROR] Ollama inference failed: {e}")
+        return "[LLM inference error]"
