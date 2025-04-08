@@ -102,7 +102,7 @@ def get_exchange_data(conn):
     return exchange_df
 
 def get_materials(conn):
-    """Get materials and concatenate them for each process_id."""
+    """Get materials and prepare them for normalization."""
     cursor = conn.cursor()
     cursor.execute("""
         SELECT 
@@ -122,18 +122,28 @@ def get_materials(conn):
         'process_id', 'property_name', 'value', 'units', 'description'
     ])
     
-    # Create concatenated string for each material entry
+    # Convert value column to numeric if possible
+    materials_df['value'] = pd.to_numeric(materials_df['value'], errors='coerce')
+    
+    # Create a pivot table: process_id as index, property_name as columns, value as values
+    pivoted_materials = materials_df.pivot_table(
+        index='process_id',
+        columns='property_name',
+        values='value',
+        aggfunc='first'  # In case of duplicates, take the first value
+    ).reset_index()
+    
+    # Also create a DataFrame with the original materials info for reference
     materials_df['material_info'] = materials_df.apply(
         lambda row: f"{row['property_name']}: {row['value']} {row['units']} - {row['description']}",
         axis=1
     )
     
-    # Group by process_id and concatenate all material info
-    materials_grouped = materials_df.groupby('process_id')['material_info'].apply(
+    materials_info = materials_df.groupby('process_id')['material_info'].apply(
         lambda x: '; '.join(x)
     ).reset_index()
     
-    return materials_grouped
+    return pivoted_materials, materials_info
 
 def main():
     # Connect to the database
@@ -144,7 +154,9 @@ def main():
         products_df = get_products(conn)
         lcia_df = get_lcia_data(conn)
         exchange_df = get_exchange_data(conn)
-        materials_df = get_materials(conn)
+        
+        # Get material values in pivot format and original format
+        pivoted_materials, materials_info = get_materials(conn)
         
         # Combine LCIA and exchange data
         combined_data = pd.concat([lcia_df, exchange_df])
@@ -157,25 +169,50 @@ def main():
             how='left'
         )
         
-        # Add materials information
+        # Add original materials information
         result = pd.merge(
             result,
-            materials_df,
+            materials_info,
             on='process_id',
             how='left'
         )
         
-        # Reorder columns to match the required output format
-        final_result = result[[
+        # Merge with pivoted materials
+        result = pd.merge(
+            result,
+            pivoted_materials,
+            on='process_id',
+            how='left'
+        )
+        
+        # Create normalized columns for each material property
+        material_properties = [col for col in pivoted_materials.columns if col != 'process_id']
+        for prop in material_properties:
+            result[f'normalized_by_{prop}'] = result['amount'] / result[prop]
+        
+        # Reorder columns to include the new normalized columns
+        # First get the base columns
+        base_columns = [
             'process_id', 'name_en', 'category_level_1', 'category_level_2', 'category_level_3',
             'type', 'indicator_key', 'module', 'scenario', 'amount', 'unit', 'material_info'
-        ]]
+        ]
+        
+        # Add the material property columns and normalized columns
+        normalized_columns = [f'normalized_by_{prop}' for prop in material_properties]
+        
+        # Combine all columns
+        final_columns = base_columns + material_properties + normalized_columns
+        
+        # Create the final result with all columns (that exist in the result DataFrame)
+        existing_columns = [col for col in final_columns if col in result.columns]
+        final_result = result[existing_columns]
         
         # Export to CSV
-        output_file = 'product_data_export.csv'
+        output_file = 'product_data_with_normalized_amounts.csv'
         final_result.to_csv(output_file, index=False)
         
         print(f"Data successfully exported to {output_file}")
+        print(f"Created normalized columns: {normalized_columns}")
         
     except Exception as e:
         print(f"An error occurred: {e}")
