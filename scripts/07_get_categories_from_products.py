@@ -3,13 +3,13 @@ import psycopg2
 import os
 import csv
 from dotenv import load_dotenv
-from llm_utils import query_llm
+from helper_scripts.llm_utils import query_llm
 
 # Load environment variables
 load_dotenv()
 
 # Configuration
-TRANSLATIONS_FILE = "translations.csv"  # <-- Set your translations filename here
+TRANSLATIONS_FILE = "./translations/translations.csv"  # <-- Set your translations filename here
 # "mistral",
 # "llama3",
 # "gemma:2b",
@@ -62,10 +62,14 @@ def load_translations(csv_file=TRANSLATIONS_FILE):
     
     return translations
 
+not_found_translations = []
 def translate_text(text, translations):
     """Translate text from German to English if a translation exists"""
-    if text not in translations:
+    formatted_text = text.replace(",", "").tolower().trim()
+    if formatted_text not in translations:
         print(f"Warning: Translations for  '{text}' not found.")
+        if text not in not_found_translations:
+            not_found_translations.append(text)
         return text
 
     return translations.get(text) # Return original if no translation found
@@ -178,7 +182,7 @@ def main():
             
             # Get classifications for this product with translations
             classifications = get_classifications_by_process_id(conn, process_id, translations)
-            
+
             # Create product object
             product = {
                 "process_id": process_id,
@@ -219,7 +223,11 @@ def main():
         # Save final results
         with open("products_analysis_results.json", "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
-            
+
+        with open("translations_not_found.txt", "w", encoding="utf-8") as f:
+            for item in not_found_translations:
+                f.write(f"{item}\n")
+
         print(f"Analysis completed for {len(results)} products. Results saved to products_analysis_results.json")
             
     except Exception as e:
