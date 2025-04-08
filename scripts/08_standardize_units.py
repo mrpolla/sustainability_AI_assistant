@@ -102,7 +102,7 @@ def get_exchange_data(conn):
     return exchange_df
 
 def get_materials(conn):
-    """Get materials and prepare them for normalization."""
+    """Get materials and prepare them for normalization with indexed naming."""
     cursor = conn.cursor()
     cursor.execute("""
         SELECT 
@@ -125,13 +125,33 @@ def get_materials(conn):
     # Convert value column to numeric if possible
     materials_df['value'] = pd.to_numeric(materials_df['value'], errors='coerce')
     
-    # Create a pivot table: process_id as index, property_name as columns, value as values
-    pivoted_materials = materials_df.pivot_table(
-        index='process_id',
-        columns='property_name',
-        values='value',
-        aggfunc='first'  # In case of duplicates, take the first value
-    ).reset_index()
+    # Create a dictionary to store the processed materials data
+    processed_materials = {}
+    
+    # Group by process_id
+    for process_id, group in materials_df.groupby('process_id'):
+        material_count = 1
+        
+        # For each material in the process
+        for _, row in group.iterrows():
+            material_prefix = f"material_{material_count}"
+            
+            # Initialize dict for this process_id if needed
+            if process_id not in processed_materials:
+                processed_materials[process_id] = {}
+            
+            # Store all material properties with indexed naming
+            processed_materials[process_id][f"property_name_{material_prefix}"] = row['property_name']
+            processed_materials[process_id][f"value_{material_prefix}"] = row['value']
+            processed_materials[process_id][f"units_{material_prefix}"] = row['units']
+            processed_materials[process_id][f"description_{material_prefix}"] = row['description']
+            
+            material_count += 1
+    
+    # Convert dictionary to DataFrame
+    materials_result_df = pd.DataFrame.from_dict(processed_materials, orient='index')
+    materials_result_df.reset_index(inplace=True)
+    materials_result_df.rename(columns={'index': 'process_id'}, inplace=True)
     
     # Also create a DataFrame with the original materials info for reference
     materials_df['material_info'] = materials_df.apply(
@@ -143,7 +163,7 @@ def get_materials(conn):
         lambda x: '; '.join(x)
     ).reset_index()
     
-    return pivoted_materials, materials_info
+    return materials_result_df, materials_info
 
 def main():
     # Connect to the database
@@ -155,8 +175,8 @@ def main():
         lcia_df = get_lcia_data(conn)
         exchange_df = get_exchange_data(conn)
         
-        # Get material values in pivot format and original format
-        pivoted_materials, materials_info = get_materials(conn)
+        # Get materials with indexed naming and original format
+        materials_df, materials_info = get_materials(conn)
         
         # Combine LCIA and exchange data
         combined_data = pd.concat([lcia_df, exchange_df])
@@ -169,41 +189,64 @@ def main():
             how='left'
         )
         
-        # Add original materials information
+        # Merge with indexed materials data
         result = pd.merge(
             result,
-            materials_info,
+            materials_df,
             on='process_id',
             how='left'
         )
         
-        # Merge with pivoted materials
-        result = pd.merge(
-            result,
-            pivoted_materials,
-            on='process_id',
-            how='left'
-        )
+        # Create normalized amount columns for each material
+        material_indices = set()
+        material_columns = []
         
-        # Create normalized columns for each material property
-        material_properties = [col for col in pivoted_materials.columns if col != 'process_id']
-        for prop in material_properties:
-            result[f'normalized_by_{prop}'] = result['amount'] / result[prop]
+        # Identify all material indices (material_1, material_2, etc.)
+        for col in result.columns:
+            if col.startswith('value_material_'):
+                material_idx = col.split('value_')[1]  # Gets "material_X"
+                material_indices.add(material_idx)
+                material_columns.append(col)
         
-        # Reorder columns to include the new normalized columns
-        # First get the base columns
+        # Sort the material indices to ensure consistent ordering
+        material_indices = sorted(list(material_indices))
+        
+        # Create normalized columns for each material
+        for material_idx in material_indices:
+            value_col = f"value_{material_idx}"
+            if value_col in result.columns:
+                # Create normalized amount column
+                result[f"normalized_amount_{material_idx}"] = result['amount'] / result[value_col]
+                
+                # Create normalized unit column (combining the indicator unit with material unit)
+                result[f"normalized_unit_{material_idx}"] = result.apply(
+                    lambda row: f"{row['unit']} / {row.get(f'units_{material_idx}', '')}",
+                    axis=1
+                )
+        
+        # Define the base columns
         base_columns = [
             'process_id', 'name_en', 'category_level_1', 'category_level_2', 'category_level_3',
-            'type', 'indicator_key', 'module', 'scenario', 'amount', 'unit', 'material_info'
+            'type', 'indicator_key', 'module', 'scenario', 'amount', 'unit'
         ]
         
-        # Add the material property columns and normalized columns
-        normalized_columns = [f'normalized_by_{prop}' for prop in material_properties]
+        # Create a list to collect all material-related columns in order
+        material_columns = []
+        for material_idx in material_indices:
+            # Add columns for this material in the specified order
+            material_columns.extend([
+                f"normalized_amount_{material_idx}",
+                f"normalized_unit_{material_idx}",
+                f"property_name_{material_idx}",
+                f"value_{material_idx}",
+                f"units_{material_idx}",
+                f"description_{material_idx}"
+            ])
         
         # Combine all columns
-        final_columns = base_columns + material_properties + normalized_columns
+        final_columns = base_columns + material_columns
         
-        # Create the final result with all columns (that exist in the result DataFrame)
+        # Create the final result with only columns that exist
         existing_columns = [col for col in final_columns if col in result.columns]
         final_result = result[existing_columns]
         
@@ -212,7 +255,7 @@ def main():
         final_result.to_csv(output_file, index=False)
         
         print(f"Data successfully exported to {output_file}")
-        print(f"Created normalized columns: {normalized_columns}")
+        print(f"Created normalized columns for materials: {material_indices}")
         
     except Exception as e:
         print(f"An error occurred: {e}")
