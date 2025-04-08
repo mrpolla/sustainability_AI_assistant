@@ -1,0 +1,52 @@
+TODO:
+
+2. Embeddings:
+SentenceTransformer
+https://huggingface.co/blog/modernbert
+https://huggingface.co/nomic-ai/modernbert-embed-base 768 vector size
+
+1. ISO extract information
+ - PyPDF2. Just pypdf
+ - pdfplumber?
+ -
+
+1. Frontend:
+- do simple user experience:
+  - choose products
+  - get comparison
+  - ask about products
+Given this frontend, adapt it so that there is a text box where users enter a product type and gets the results from the database based on name, description and classification.
+The returned products should be inserted in a listbox with checkbox for each product. the columsn of the listbox should show, name, description and classification for each proeuct.
+
+- AI here?
+
+
+2. Unit normalization
+  - pdf
+  - analysis for ranges
+  - adding to database
+    - https://chatgpt.com/c/67f14b26-6310-8012-83a7-2c282d2d9a08
+  - which comparisons make sense? per category? there would be too few per category. ChatGpt says functional unit or function in the building
+    - aggregate to broader classes
+   - https://oekobaudat.de/OEKOBAU.DAT/datasetdetail/process.xhtml?uuid=dac6bcdf-3b9d-4fd3-96af-d32d3931f633&version=00.06.000&stock=OBD_2024_I&lang=en
+   - https://oekobaudat.de/OEKOBAU.DAT/datasetdetail/process.xhtml?uuid=d3f0a22a-a93b-471b-ae73-67e8646d2f7d&version=20.24.070&stock=OBD_2024_I&lang=en
+   - https://oekobaudat.de/OEKOBAU.DAT/datasetdetail/process.xhtml?uuid=73de9e80-8ed2-47d8-b5b6-854c84166f24&version=20.24.070&stock=OBD_2024_I&lang=en
+   - https://oekobaudat.de/OEKOBAU.DAT/datasetdetail/process.xhtml?uuid=d8aa07b1-b3aa-41b0-a17b-f8f5e15f37f3&version=20.24.070&stock=OBD_2024_I&lang=en
+
+3. Embed ISO pdfs
+  - how to do it?
+  - https://urban-mining-index.de/en/
+
+4. Ground truth
+
+- named entity recognition
+
+
+15. To check sentence transformer:
+https://huggingface.co/spaces/mteb/leaderboard
+15. For now, decided to use RAG only, not fine tune. I would need much more information.
+16. Include ISO PDFs and books for
+
+17. How frontend should look like
+https://lovable.dev/projects/0c3fff77-1cff-40f9-a03c-464335e41533
+https://preview--eco-component-compass.lovable.app/

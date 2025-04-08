@@ -179,7 +179,7 @@ def create_database_and_tables():
                 process_id TEXT,
                 property_id TEXT,
                 property_name TEXT,
-                value REAL,
+                value TEXT,
                 units TEXT,
                 description TEXT,
                 FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE

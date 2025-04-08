@@ -5,11 +5,17 @@
 logs
 *.log
 
-# downloads
+# folders to ignore
 /downloads
-
-# plots
 /plots
+/node_modules
+/data
+/logs
+/temp
+/llama.cpp
 
 *.csv
 *.xlsx
+
+
+

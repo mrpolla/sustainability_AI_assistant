@@ -1,0 +1,22 @@
+BE VERY CONCISE and list 3:
+
+mistral
+
+materials_response
+'1. Recycled Polyamide 6 (PA6)\n2. Renewable Wood Resin (backing compound)\n3. Recycled Polyester (Sone acoustic cover, filler, and covering fleece)\n4. Glass-fleece reinforcement (backing compound)'
+uses_response
+'1. Acoustic Flooring: The Sone acoustic cover makes these tufted tiles suitable for sound absorption in various indoor environments such as offices, classrooms, and meeting rooms.\n2. Modular Floor Coverings: Due to their 100% recycled polyamide 6 pile material, these carpet tiles are ideal for flooring applications where sustainability is a priority, such as eco-friendly buildings or green certified projects.\n3. Resilient Underfoot Surfaces: The combination of CQuest Bio heavy backing and the pile material provides resilience underfoot, making them suitable for areas with heavy foot traffic, like offices or retail spaces.'
+
+------------
+
+
+
+
+
+------------
+phi3:mini
+
+materials_response
+'- Recycled polyamid (polyester) yarn\n- CQuest Bio heavy backing compound with recycled wood resin, glass fleece and recycled filler\n- Sone acoustic cover fleece'
+uses_response
+'- Commercial office floorings for acoustic benefits and sustainability  \n- Residential flooring with a focus on eco-friendliness    \n- High-traffic areas in hotels or hospitals due to durability and recycled content advantages'

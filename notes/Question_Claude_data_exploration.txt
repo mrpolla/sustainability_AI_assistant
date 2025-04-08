@@ -1,0 +1,16 @@
+Consider the script attached. Modify it so that the statistics and summary ("mean", "std", "min", "max", "median") are also broken down by lifecycle stage (module).
+For each indicator worksheet:
+- The name of each worksheet should be "Indicator_key (source)"
+- Do not write the whole group to the worksheet group.to_excel(writer, sheet_name=sheet_name, index=False)
+- The first rows in the worksheet should be the summary by life cycle stage (module). The columns of the summary should be "indicator", "name", "module", "count" "original unit", "common unit", "mean", "std", "min", "max", "median"
+- After the summary, insert a box plot and besides it a histogram for the indicator without the outliers! The boxplot and histogram should not be on top of any text.
+- After the boxplot and histogram you must list the outliers.
+- For the outliers, insert an empty row when process_id changes.
+- For the outliers, I want the columns "process_id", "indicator", "module", "unit", "min", "max", "mean", "amount", "comment"
+
+Last thing: remove anything that has to do with classification (I already commented out most of it).
+
+
+Create a PDF where each Indicator is a chapter.
+
+There should be a text explanation of the 5 main outliers.

@@ -490,9 +490,9 @@ def store_data(download_dir):
                 file_count += 1
 
                 # Stop processing after 50 files
-                if file_count >= 100:
-                    logger.info("Processed 100 files. Stopping further processing.")
-                    break                
+                # if file_count >= 100:
+                #     logger.info("Processed 100 files. Stopping further processing.")
+                #     break                
 
     except Exception as e:
         logger.error(f"Error storing data in the database: {e}")
@@ -641,13 +641,19 @@ def store_data_in_db(collected_data, conn):
                         item['process_id'],
                         property_id,
                         property_data.get('name'),
-                        property_data.get('value'),
+                        convert_to_float(property_data.get('value')),
                         property_data.get('units'),
                         property_data.get('description')
                     ))
                     
         conn.commit()
 
+def convert_to_float(val):
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+    
 def main():
     """Main function to run the scraper."""
     driver = None

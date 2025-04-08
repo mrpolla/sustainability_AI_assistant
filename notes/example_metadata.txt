@@ -1,0 +1,10 @@
+{
+  "uuid": "46b9a316-2df9-42e5-a57a-be488950d531",
+  "product_id": "46b9a316-2df9-42e5-a57a-be488950d531_00.04.001",
+  "chunk_type": "basic_info",
+  "product_name": "Sliding Door 50 / 50E / 50T / 50ET / 50L / 50 LT"
+  "product type":
+  "product category":
+  "product use":
+  "tags": msöds, d,lsödsa, ,dlsaöda
+}
