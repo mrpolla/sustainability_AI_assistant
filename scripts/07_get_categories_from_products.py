@@ -55,7 +55,7 @@ def load_translations(csv_file=TRANSLATIONS_FILE):
                     german_text = row[0].strip()
                     english_text = row[1].strip()
                     if german_text and english_text:
-                        translations[german_text] = english_text
+                        translations[german_text.lower()] = english_text
         print(f"Loaded {len(translations)} translations from {csv_file}")
     except FileNotFoundError:
         print(f"Warning: Translations file '{csv_file}' not found. No translations will be applied.")
@@ -65,7 +65,7 @@ def load_translations(csv_file=TRANSLATIONS_FILE):
 not_found_translations = []
 def translate_text(text, translations):
     """Translate text from German to English if a translation exists"""
-    formatted_text = text.replace(",", "").tolower().trim()
+    formatted_text = text.replace(",", "").lower().strip()
     if formatted_text not in translations:
         print(f"Warning: Translations for  '{text}' not found.")
         if text not in not_found_translations:
