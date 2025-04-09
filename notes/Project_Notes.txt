@@ -70,15 +70,35 @@ ollama run mistral
 19. Text chunking for embedding:
 - 3-4 sentences to begin with
 
+20. Data cleaning
+- translating and uniform category levels 1, 2 and 3
+  - translated (total) 483 entries in chatGpt and used those to set category to product
+
+21. Data exploration and cleaning:
+- got flow properties and modified materials to material_properties
+- now I can compare indicators accross pahses, categories and normalize values
+
+22. Materials and use cases are not reliably found in the EPD information. I will loop through the products and ask the llm to infer it from the text if available.
+- a lot of prompt engineering, translating text from german to english, summarizing long information...
+
+
+
+- extra indicators: lcia (IRP, GWP, EP) and exchanges(SF)
 
 
 
 
 
+f63ac879-fa7d-4f91-813e-e816cbdf1927_00.00.025
 
-
-
-
+SELECT *
+FROM products p
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM flow_properties fp
+    WHERE fp.process_id = p.process_id
+      AND fp.is_reference = TRUE
+);
 
 
 

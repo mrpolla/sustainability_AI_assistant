@@ -1,8 +1,10 @@
-import psycopg2
 import pandas as pd
+import psycopg2
 import os
 import re
 from dotenv import load_dotenv
+import traceback
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 # Load environment variables from .env file (for database credentials)
 load_dotenv()
@@ -297,6 +299,52 @@ def get_material_properties(conn):
     
     return material_prop_result_df, material_prop_info
 
+def get_flow_properties(conn):
+    """Get flow properties and identify the reference property for each process."""
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            process_id,
+            name_en,
+            name_de,
+            meanamount,
+            unit,
+            is_reference
+        FROM 
+            flow_properties
+        WHERE
+            is_reference = true
+    """)
+    reference_flow_props = cursor.fetchall()
+    cursor.close()
+    
+    # Convert to DataFrame
+    reference_props_df = pd.DataFrame(reference_flow_props, columns=[
+        'process_id', 'name_en', 'name_de', 'meanamount', 'unit', 'is_reference'
+    ])
+    
+    # Convert meanamount column to numeric if possible
+    reference_props_df['meanamount'] = pd.to_numeric(reference_props_df['meanamount'], errors='coerce')
+    
+    # Normalize unit values
+    reference_props_df['unit'] = reference_props_df['unit'].apply(normalize_unit)
+    
+    # Rename columns to make their purpose clearer
+    reference_props_df = reference_props_df.rename(columns={
+        'name_en': 'reference_prop_name_en',
+        'name_de': 'reference_prop_name_de',
+        'meanamount': 'reference_prop_value',
+        'unit': 'reference_prop_unit'
+    })
+    
+    # Keep only needed columns
+    reference_props_df = reference_props_df[[
+        'process_id', 'reference_prop_name_en', 'reference_prop_name_de', 
+        'reference_prop_value', 'reference_prop_unit'
+    ]]
+    
+    return reference_props_df
+
 def main():
     # Connect to the database
     conn = connect_to_db()
@@ -307,8 +355,11 @@ def main():
         lcia_df = get_lcia_data(conn)
         exchange_df = get_exchange_data(conn)
         
-        # Get material properties with indexed naming and original format
+        # Get material properties
         material_prop_df, material_prop_info = get_material_properties(conn)
+        
+        # Get reference flow properties
+        reference_props_df = get_flow_properties(conn)
         
         # Combine LCIA and exchange data
         combined_data = pd.concat([lcia_df, exchange_df])
@@ -321,76 +372,208 @@ def main():
             how='left'
         )
         
-        # Merge with indexed material properties data
+        # Merge with reference flow properties
+        result = pd.merge(
+            result,
+            reference_props_df,
+            on='process_id',
+            how='left'
+        )
+        
+        # Create normalized columns based on reference properties
+        result['normalized_amount_reference_prop'] = result.apply(
+            lambda row: row['amount'] / row['reference_prop_value'] 
+            if pd.notnull(row.get('reference_prop_value')) and row.get('reference_prop_value') != 0 
+            else None, 
+            axis=1
+        )
+        
+        # Create normalized unit combining indicator unit with reference property unit
+        result['normalized_unit_reference_prop'] = result.apply(
+            lambda row: f"{row['unit']} / {row.get('reference_prop_unit', '')}" 
+            if pd.notnull(row.get('reference_prop_unit')) 
+            else None,
+            axis=1
+        )
+        
+        # Merge with material properties data
         result = pd.merge(
             result,
             material_prop_df,
             on='process_id',
             how='left'
         )
-        
+            
         # Create normalized amount columns for each material property
         material_prop_indices = set()
-        material_prop_columns = []
-        
+            
         # Identify all material property indices (material_prop_1, material_prop_2, etc.)
         for col in result.columns:
             if col.startswith('value_material_prop_'):
                 material_prop_idx = col.split('value_')[1]  # Gets "material_prop_X"
                 material_prop_indices.add(material_prop_idx)
-                material_prop_columns.append(col)
-        
+            
         # Sort the material property indices to ensure consistent ordering
         material_prop_indices = sorted(list(material_prop_indices))
-        
+            
         # Create normalized columns for each material property
         for material_prop_idx in material_prop_indices:
             value_col = f"value_{material_prop_idx}"
             if value_col in result.columns:
                 # Create normalized amount column
-                result[f"normalized_amount_{material_prop_idx}"] = result['amount'] / result[value_col]
+                result[f"normalized_amount_{material_prop_idx}"] = result.apply(
+                    lambda row: row['amount'] / row[value_col] 
+                    if pd.notnull(row.get(value_col)) and row.get(value_col) != 0 
+                    else None, 
+                    axis=1
+                )
                 
-                # Create normalized unit column (combining the indicator unit with property unit)
+                # Create normalized unit column
                 result[f"normalized_unit_{material_prop_idx}"] = result.apply(
-                    lambda row: f"{row['unit']} / {row.get(f'units_{material_prop_idx}', '')}",
+                    lambda row: f"{row['unit']} / {row.get(f'units_{material_prop_idx}', '')}"
+                    if pd.notnull(row.get(f'units_{material_prop_idx}')) 
+                    else None,
                     axis=1
                 )
         
-        # Define the base columns
-        base_columns = [
+        # Define the columns we want to include in each output
+        output_columns = [
             'process_id', 'name_en', 'category_level_1', 'category_level_2', 'category_level_3',
-            'type', 'indicator_key', 'module', 'scenario', 'amount', 'unit'
+            'module', 'scenario', 'amount', 'unit',
+            'reference_prop_name_en', 'reference_prop_value', 'reference_prop_unit',
+            'normalized_amount_reference_prop', 'normalized_unit_reference_prop'
         ]
         
-        # Create a list to collect all material property-related columns in order
-        material_prop_columns = []
+        # Add material property columns if they exist
         for material_prop_idx in material_prop_indices:
-            # Add columns for this material property in the specified order
-            material_prop_columns.extend([
-                f"normalized_amount_{material_prop_idx}",
-                f"normalized_unit_{material_prop_idx}",
-                f"property_name_{material_prop_idx}",
-                f"value_{material_prop_idx}",
-                f"units_{material_prop_idx}",
-                f"description_{material_prop_idx}"
-            ])
+            if f"normalized_amount_{material_prop_idx}" in result.columns:
+                output_columns.extend([
+                    f"property_name_{material_prop_idx}",
+                    f"value_{material_prop_idx}",
+                    f"units_{material_prop_idx}",
+                    f"normalized_amount_{material_prop_idx}",
+                    f"normalized_unit_{material_prop_idx}"
+                ])
         
-        # Combine all columns
-        final_columns = base_columns + material_prop_columns
+        # Filter output columns to only include those that exist
+        output_columns = [col for col in output_columns if col in result.columns]
         
-        # Create the final result with only columns that exist
-        existing_columns = [col for col in final_columns if col in result.columns]
-        final_result = result[existing_columns]
+        # Get unique indicators
+        unique_indicators = sorted(result['indicator_key'].dropna().unique())
         
-        # Export to CSV
-        output_file = 'product_data_with_normalized_amounts.csv'
-        final_result.to_csv(output_file, index=False)
+        print(f"Creating Excel file with {len(unique_indicators)} indicator tabs...")
         
-        print(f"Data successfully exported to {output_file}")
-        print(f"Created normalized columns for material properties: {material_prop_indices}")
+        # Create a new Excel workbook
+        excel_filename = "indicators_by_category.xlsx"
+        
+        # Use pandas ExcelWriter with openpyxl engine
+        with pd.ExcelWriter(excel_filename, engine='openpyxl') as writer:
+            # First process all indicators
+            for indicator in unique_indicators:
+                if pd.isna(indicator) or indicator == "":
+                    continue
+                    
+                # Filter data for this indicator
+                indicator_data = result[result['indicator_key'] == indicator].copy()
+                
+                # If no data for this indicator, skip
+                if indicator_data.empty:
+                    continue
+                
+                print(f"  - Processing indicator: {indicator}")
+                
+                # Sort by category and name
+                indicator_data = indicator_data.sort_values(
+                    by=['category_level_1', 'category_level_2', 'category_level_3', 'name_en']
+                )
+                
+                # Create a valid sheet name (max 31 chars, no special chars)
+                sheet_name = re.sub(r'[^\w\-_ ]', '', indicator)[:31]
+                
+                # Instead of directly writing the DataFrame, we'll add empty rows between categories
+                df_with_gaps = []
+                last_category = None
+                
+                # Add header row
+                df_with_gaps.append(pd.Series({col: col for col in output_columns}))
+                
+                # Process rows with category separators
+                for _, row in indicator_data.iterrows():
+                    current_category = (
+                        row['category_level_1'], 
+                        row['category_level_2'], 
+                        row['category_level_3']
+                    )
+                    
+                    # If this is a new category, add an empty row
+                    if last_category is not None and current_category != last_category:
+                        # Add empty row (all values None)
+                        df_with_gaps.append(pd.Series({col: None for col in output_columns}))
+                    
+                    # Add the data row
+                    df_with_gaps.append(pd.Series({col: row.get(col) for col in output_columns}))
+                    
+                    # Update last category
+                    last_category = current_category
+                
+                # Convert list of Series to DataFrame
+                df_to_write = pd.DataFrame(df_with_gaps)
+                
+                # Write to Excel sheet
+                df_to_write.to_excel(writer, sheet_name=sheet_name, header=False, index=False)
+                
+            # Also create an 'All Data' tab
+            print("  - Creating 'All Data' tab...")
+            
+            # Sort all data
+            all_data = result.sort_values(
+                by=['indicator_key', 'category_level_1', 'category_level_2', 'category_level_3', 'name_en']
+            )
+            
+            # Create a similar process for all data with separators
+            df_all_with_gaps = []
+            last_category = None
+            last_indicator = None
+            
+            # Add header row
+            df_all_with_gaps.append(pd.Series({col: col for col in output_columns}))
+            
+            # Process rows with category and indicator separators
+            for _, row in all_data.iterrows():
+                current_indicator = row['indicator_key']
+                current_category = (
+                    row['category_level_1'], 
+                    row['category_level_2'], 
+                    row['category_level_3']
+                )
+                
+                # If this is a new indicator, add two empty rows
+                if last_indicator is not None and current_indicator != last_indicator:
+                    df_all_with_gaps.append(pd.Series({col: None for col in output_columns}))
+                    df_all_with_gaps.append(pd.Series({col: None for col in output_columns}))
+                    last_category = None  # Reset category tracking for new indicator
+                
+                # If this is a new category within the same indicator, add one empty row
+                elif last_category is not None and current_category != last_category:
+                    df_all_with_gaps.append(pd.Series({col: None for col in output_columns}))
+                
+                # Add the data row
+                df_all_with_gaps.append(pd.Series({col: row.get(col) for col in output_columns}))
+                
+                # Update tracking variables
+                last_category = current_category
+                last_indicator = current_indicator
+            
+            # Convert list of Series to DataFrame and write to Excel
+            df_all_to_write = pd.DataFrame(df_all_with_gaps)
+            df_all_to_write.to_excel(writer, sheet_name='All Data', header=False, index=False)
+        
+        print(f"Excel file created successfully: {excel_filename}")
         
     except Exception as e:
         print(f"An error occurred: {e}")
+        # For better debugging, print the full traceback
+        traceback.print_exc()
     
     finally:
         conn.close()

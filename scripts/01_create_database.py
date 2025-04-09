@@ -191,13 +191,33 @@ def create_database_and_tables():
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS Material_Properties (
-                material_id SERIAL PRIMARY KEY,
+                material_prop_id SERIAL PRIMARY KEY,
                 process_id TEXT,
                 property_id TEXT,
                 property_name TEXT,
                 value TEXT,
                 units TEXT,
                 description TEXT,
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Materials (
+                material_id SERIAL PRIMARY KEY,
+                process_id TEXT,
+                material TEXT,
+                list_order TEXT,
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Uses (
+                use_id SERIAL PRIMARY KEY,
+                process_id TEXT,
+                use_case TEXT,
+                list_order TEXT,
                 FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
             )
         ''')
