@@ -1,10 +1,133 @@
 import psycopg2
 import pandas as pd
 import os
+import re
 from dotenv import load_dotenv
 
 # Load environment variables from .env file (for database credentials)
 load_dotenv()
+
+not_found_units = []
+def normalize_unit(unit):
+    """
+    Standardize unit names to a consistent format.
+    Comprehensive version that handles all units found in the CSV files.
+    """
+    import re
+    
+    if not isinstance(unit, str):
+        return unit
+    
+    # Handle NULL values
+    if unit.upper() == "NULL" or unit.strip() == "":
+        return "-"
+    
+    unit = unit.strip().lower()
+    
+    # Standard mappings with expanded patterns
+    mappings = {
+        # Volume units
+        r"^m[\^³]?[3]?$": "m3",
+        r"^m\s*[3³]$": "m3",
+        r"^m\^3$": "m3",
+        r"^m³.*$": "m3",
+        
+        # Carbon dioxide equivalents with various notations
+        r"^kg.*co.*?2.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg CO2 eq",
+        r"^kg.*co.*?\(?2\)?.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg CO2 eq",
+        r"^kg.*co_?\(?2\)?[- ]?äq\.?$": "kg CO2 eq",
+        r"^kg\s*co_?\(?2\)?(?:\s|-|_).*$": "kg CO2 eq",
+        
+        # CFC equivalents
+        r"^kg.*(?:cfc|r)\s*11.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg CFC-11 eq",
+        r"^kg.*(?:cfc|r)11.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg CFC-11 eq",
+        r"^kg\s*cfc-11\s*eq\.?$": "kg CFC-11 eq",
+        
+        # Phosphorus equivalents
+        r"^kg.*p(?:[ -]?eq|\s?äq|\s?aeq|\s?äqv|\s?eqv|[- ]?äquiv|\s?equivalent).*$": "kg P eq",
+        r"^kg.*p[- ]?äq.*$": "kg P eq",
+        r"^kg.*phosphat.*$": "kg PO4 eq",
+        
+        # NMVOC equivalents
+        r"^kg.*n.*mvoc.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg NMVOC eq",
+        r"^kg.*nmvoc.*$": "kg NMVOC eq",
+        
+        # Ethene/Ethylene equivalents
+        r"^kg.*(?:ethen|ethene|ethylen).*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg C2H2 eq",
+        r"^kg.*(?:ethen|ethene|ethylen)[- ]?äq.*$": "kg C2H2 eq",
+        r"^kg.*c2h[24].*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg C2H2 eq",
+        
+        # Antimony equivalents
+        r"^kg.*sb.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg Sb eq",
+        
+        # Sulfur dioxide equivalents
+        r"^kg.*so.*?2.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg SO2 eq",
+        r"^kg.*so_?\(?2\)?.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg SO2 eq",
+        
+        # Phosphate equivalents
+        r"^kg.*po.*?4.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg PO4 eq",
+        r"^kg.*po_?\(?4\)?.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg PO4 eq",
+        r"^kg.*po.*\(?3-?\)?.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg PO4 eq",
+        r"^kg.*\(po4\)3-.*$": "kg PO4 eq",
+        r"^kg.*phosphate.*$": "kg PO4 eq",
+        
+        # Nitrogen equivalents
+        r"^kg.*n.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kg N eq",
+        r"^mol.*n.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "mol N eq",
+        r"^mole.*n.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "mol N eq",
+        
+        # Hydrogen ion equivalents
+        r"^mol.*h.*[\+\^].*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "mol H+ eq",
+        r"^mole.*h.*[\+\^].*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "mol H+ eq",
+        r"^mol.*h.*[-\+](?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "mol H+ eq",
+        
+        # Uranium equivalents
+        r"^k?bq.*u235.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*$": "kBq U235 eq",
+        
+        # World water equivalents
+        r"^m.*?3.*world.*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*(?:deprived|entzogen)?$": "m3 world eq deprived",
+        r"^m\^?\(?3\)?.*w(?:orld|elt).*(?:eq|äq|aeq|äqv|eqv|[- ]?äquiv|\s?equivalent).*(?:deprived|entzogen)$": "m3 world eq deprived",
+        
+        # Disease incidence
+        r"^disease\s*incidence$": "disease incidence",
+        r"^krankheitsfälle$": "disease incidence",
+        
+        # Other specific units
+        r"^ctuh$": "CTUh",
+        r"^ctue$": "CTUe",
+        r"^sqp$": "SQP",
+        r"^dimensionless$": "dimensionless",
+        
+        # Simple units
+        r"^-?$": "-",
+        r"^mj$": "MJ",
+        r"^kg$": "kg",
+        
+        # Per unit conversions
+        r"^kg\/pce$": "kg/pce",
+        r"^kg\s*\/\s*pce$": "kg/pce",
+        
+        # Compound units with divisions or per - volume-based
+        r"^kg\s*\/\s*m[\^]?3$": "kg/m3",
+        r"^kg\s*\/\s*m3$": "kg/m3",
+        r"^kg\s*per\s*m3$": "kg/m3",
+        r"^kg\s*per\s*m[\^]?3$": "kg/m3",
+        
+        # Compound units with divisions or per - area-based
+        r"^kg\s*\/\s*m[\^]?2$": "kg/m2",
+        r"^kg\s*\/\s*m2$": "kg/m2",
+        r"^kg\s*per\s*m2$": "kg/m2",
+        r"^kg\s*per\s*m[\^]?2$": "kg/m2"
+    }
+
+    for pattern, standard in mappings.items():
+        if re.match(pattern, unit):
+            return standard
+    
+    if unit not in not_found_units:
+        print(f"Unit '{unit}' not found in standard mappings.")
+        not_found_units.append(unit)
+    return unit
 
 def connect_to_db():
     """Connect to the PostgreSQL database and return the connection."""
@@ -65,7 +188,10 @@ def get_lcia_data(conn):
         'process_id', 'indicator_key', 'unit', 
         'module', 'scenario', 'amount'
     ])
-    
+
+    # Normalize unit values
+    lcia_df['unit'] = lcia_df['unit'].apply(normalize_unit)
+
     # Add type column to identify as LCIA
     lcia_df['type'] = 'lcia'
     
@@ -95,14 +221,17 @@ def get_exchange_data(conn):
         'process_id', 'indicator_key', 'unit', 
         'module', 'scenario', 'amount'
     ])
-    
+
+    # Normalize unit values
+    exchange_df['unit'] = exchange_df['unit'].apply(normalize_unit)
+
     # Add type column to identify as exchange
     exchange_df['type'] = 'exchange'
     
     return exchange_df
 
-def get_materials(conn):
-    """Get materials and prepare them for normalization with indexed naming."""
+def get_material_properties(conn):
+    """Get material properties and prepare them for normalization with indexed naming."""
     cursor = conn.cursor()
     cursor.execute("""
         SELECT 
@@ -112,58 +241,61 @@ def get_materials(conn):
             units,
             description
         FROM 
-            materials
+            material_properties
     """)
-    materials_data = cursor.fetchall()
+    material_prop_data = cursor.fetchall()
     cursor.close()
     
     # Convert to DataFrame
-    materials_df = pd.DataFrame(materials_data, columns=[
+    material_prop_df = pd.DataFrame(material_prop_data, columns=[
         'process_id', 'property_name', 'value', 'units', 'description'
     ])
     
     # Convert value column to numeric if possible
-    materials_df['value'] = pd.to_numeric(materials_df['value'], errors='coerce')
+    material_prop_df['value'] = pd.to_numeric(material_prop_df['value'], errors='coerce')
     
-    # Create a dictionary to store the processed materials data
-    processed_materials = {}
+    # Normalize units values
+    material_prop_df['units'] = material_prop_df['units'].apply(normalize_unit)
+    
+    # Create indexed material property columns
+    processed_material_props = {}
     
     # Group by process_id
-    for process_id, group in materials_df.groupby('process_id'):
-        material_count = 1
+    for process_id, group in material_prop_df.groupby('process_id'):
+        prop_count = 1
         
-        # For each material in the process
+        # For each material property in the process
         for _, row in group.iterrows():
-            material_prefix = f"material_{material_count}"
+            material_prop_prefix = f"material_prop_{prop_count}"
             
             # Initialize dict for this process_id if needed
-            if process_id not in processed_materials:
-                processed_materials[process_id] = {}
+            if process_id not in processed_material_props:
+                processed_material_props[process_id] = {}
             
-            # Store all material properties with indexed naming
-            processed_materials[process_id][f"property_name_{material_prefix}"] = row['property_name']
-            processed_materials[process_id][f"value_{material_prefix}"] = row['value']
-            processed_materials[process_id][f"units_{material_prefix}"] = row['units']
-            processed_materials[process_id][f"description_{material_prefix}"] = row['description']
+            # Store all material property attributes with indexed naming
+            processed_material_props[process_id][f"property_name_{material_prop_prefix}"] = row['property_name']
+            processed_material_props[process_id][f"value_{material_prop_prefix}"] = row['value']
+            processed_material_props[process_id][f"units_{material_prop_prefix}"] = row['units']
+            processed_material_props[process_id][f"description_{material_prop_prefix}"] = row['description']
             
-            material_count += 1
+            prop_count += 1
     
     # Convert dictionary to DataFrame
-    materials_result_df = pd.DataFrame.from_dict(processed_materials, orient='index')
-    materials_result_df.reset_index(inplace=True)
-    materials_result_df.rename(columns={'index': 'process_id'}, inplace=True)
+    material_prop_result_df = pd.DataFrame.from_dict(processed_material_props, orient='index')
+    material_prop_result_df.reset_index(inplace=True)
+    material_prop_result_df.rename(columns={'index': 'process_id'}, inplace=True)
     
-    # Also create a DataFrame with the original materials info for reference
-    materials_df['material_info'] = materials_df.apply(
+    # Also create a DataFrame with the original material properties info for reference
+    material_prop_df['material_prop_info'] = material_prop_df.apply(
         lambda row: f"{row['property_name']}: {row['value']} {row['units']} - {row['description']}",
         axis=1
     )
     
-    materials_info = materials_df.groupby('process_id')['material_info'].apply(
+    material_prop_info = material_prop_df.groupby('process_id')['material_prop_info'].apply(
         lambda x: '; '.join(x)
     ).reset_index()
     
-    return materials_result_df, materials_info
+    return material_prop_result_df, material_prop_info
 
 def main():
     # Connect to the database
@@ -175,8 +307,8 @@ def main():
         lcia_df = get_lcia_data(conn)
         exchange_df = get_exchange_data(conn)
         
-        # Get materials with indexed naming and original format
-        materials_df, materials_info = get_materials(conn)
+        # Get material properties with indexed naming and original format
+        material_prop_df, material_prop_info = get_material_properties(conn)
         
         # Combine LCIA and exchange data
         combined_data = pd.concat([lcia_df, exchange_df])
@@ -189,38 +321,38 @@ def main():
             how='left'
         )
         
-        # Merge with indexed materials data
+        # Merge with indexed material properties data
         result = pd.merge(
             result,
-            materials_df,
+            material_prop_df,
             on='process_id',
             how='left'
         )
         
-        # Create normalized amount columns for each material
-        material_indices = set()
-        material_columns = []
+        # Create normalized amount columns for each material property
+        material_prop_indices = set()
+        material_prop_columns = []
         
-        # Identify all material indices (material_1, material_2, etc.)
+        # Identify all material property indices (material_prop_1, material_prop_2, etc.)
         for col in result.columns:
-            if col.startswith('value_material_'):
-                material_idx = col.split('value_')[1]  # Gets "material_X"
-                material_indices.add(material_idx)
-                material_columns.append(col)
+            if col.startswith('value_material_prop_'):
+                material_prop_idx = col.split('value_')[1]  # Gets "material_prop_X"
+                material_prop_indices.add(material_prop_idx)
+                material_prop_columns.append(col)
         
-        # Sort the material indices to ensure consistent ordering
-        material_indices = sorted(list(material_indices))
+        # Sort the material property indices to ensure consistent ordering
+        material_prop_indices = sorted(list(material_prop_indices))
         
-        # Create normalized columns for each material
-        for material_idx in material_indices:
-            value_col = f"value_{material_idx}"
+        # Create normalized columns for each material property
+        for material_prop_idx in material_prop_indices:
+            value_col = f"value_{material_prop_idx}"
             if value_col in result.columns:
                 # Create normalized amount column
-                result[f"normalized_amount_{material_idx}"] = result['amount'] / result[value_col]
+                result[f"normalized_amount_{material_prop_idx}"] = result['amount'] / result[value_col]
                 
-                # Create normalized unit column (combining the indicator unit with material unit)
-                result[f"normalized_unit_{material_idx}"] = result.apply(
-                    lambda row: f"{row['unit']} / {row.get(f'units_{material_idx}', '')}",
+                # Create normalized unit column (combining the indicator unit with property unit)
+                result[f"normalized_unit_{material_prop_idx}"] = result.apply(
+                    lambda row: f"{row['unit']} / {row.get(f'units_{material_prop_idx}', '')}",
                     axis=1
                 )
         
@@ -230,21 +362,21 @@ def main():
             'type', 'indicator_key', 'module', 'scenario', 'amount', 'unit'
         ]
         
-        # Create a list to collect all material-related columns in order
-        material_columns = []
-        for material_idx in material_indices:
-            # Add columns for this material in the specified order
-            material_columns.extend([
-                f"normalized_amount_{material_idx}",
-                f"normalized_unit_{material_idx}",
-                f"property_name_{material_idx}",
-                f"value_{material_idx}",
-                f"units_{material_idx}",
-                f"description_{material_idx}"
+        # Create a list to collect all material property-related columns in order
+        material_prop_columns = []
+        for material_prop_idx in material_prop_indices:
+            # Add columns for this material property in the specified order
+            material_prop_columns.extend([
+                f"normalized_amount_{material_prop_idx}",
+                f"normalized_unit_{material_prop_idx}",
+                f"property_name_{material_prop_idx}",
+                f"value_{material_prop_idx}",
+                f"units_{material_prop_idx}",
+                f"description_{material_prop_idx}"
             ])
         
         # Combine all columns
-        final_columns = base_columns + material_columns
+        final_columns = base_columns + material_prop_columns
         
         # Create the final result with only columns that exist
         existing_columns = [col for col in final_columns if col in result.columns]
@@ -255,7 +387,7 @@ def main():
         final_result.to_csv(output_file, index=False)
         
         print(f"Data successfully exported to {output_file}")
-        print(f"Created normalized columns for materials: {material_indices}")
+        print(f"Created normalized columns for material properties: {material_prop_indices}")
         
     except Exception as e:
         print(f"An error occurred: {e}")

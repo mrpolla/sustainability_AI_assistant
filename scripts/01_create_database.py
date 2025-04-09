@@ -177,7 +177,20 @@ def create_database_and_tables():
         ''')
 
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Materials (
+            CREATE TABLE IF NOT EXISTS Flow_Properties (
+                flow_property_id SERIAL PRIMARY KEY,
+                process_id TEXT,
+                name_de TEXT,
+                name_en TEXT,
+                meanAmount TEXT,
+                unit TEXT,
+                is_reference BOOLEAN DEFAULT FALSE,
+                FOREIGN KEY (process_id) REFERENCES Products (process_id) ON DELETE CASCADE
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Material_Properties (
                 material_id SERIAL PRIMARY KEY,
                 process_id TEXT,
                 property_id TEXT,

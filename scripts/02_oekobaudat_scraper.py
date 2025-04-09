@@ -261,6 +261,11 @@ def parse_xml(xml_path):
         return el.text if el is not None else None
 
     uuid = get_text('.//common:UUID')
+    # f595f738-673f-4665-9db9-8d31b4468512_00.00.003
+    # cf-4486-b17e-5031336c30ab_00.00.006
+    # 57e60724-96e8-4c62-9ccc-5d3be755ec1a_00.02.000
+    # if "26353b00-6cd3-426d-903b-9fc5b1670398_20.24.070" in process_id: 
+    #     a = ""
     version = process_id[len(uuid) + 1:] if process_id.startswith(uuid + "_") else None
 
     name = get_multilang('.//process:processInformation/process:dataSetInformation/process:name/process:baseName')
@@ -345,6 +350,7 @@ def parse_xml(xml_path):
         data_set_internal_id = exchange.attrib.get('dataSetInternalID')
         reference_to_flow = exchange.find('.//process:referenceToFlowDataSet', namespaces)
         uri = reference_to_flow.attrib.get('uri')
+        ref_object_id = reference_to_flow.attrib.get('refObjectId')
         flow = get_multilang_from_elem(exchange, './process:referenceToFlowDataSet/common:shortDescription')
         indicator_key = get_indicator_key(flow)
         direction = get_text_from_elem(exchange, './process:exchangeDirection')
@@ -365,6 +371,7 @@ def parse_xml(xml_path):
             'data_set_internal_id' : data_set_internal_id,
             'reference_to_flow': reference_to_flow,
             'uri': uri,
+            'ref_object_id': ref_object_id,
             'flow': flow,
             'indicator_key': indicator_key,
             'direction': direction,
@@ -403,38 +410,132 @@ def parse_xml(xml_path):
     reference_flow_id = root.find('.//process:quantitativeReference/process:referenceToReferenceFlow', namespaces).text
 
 
-    materials = []
+    reference_flow = []
     for exchange in exchanges:
         if exchange['data_set_internal_id'] == reference_flow_id:
+
+            # Get the directory of the original xml file and set final_uri to None
+            parent_folder = os.path.dirname(xml_path)
+            final_uri = None
+
+            # Check if the exchange has a URI or a reference to a flow
             uri = exchange['uri']
+            refObjectId = exchange['ref_object_id']
+
             if uri:
-                base_uri = os.path.splitext(uri)[0]  # Remove the .xml extension
-                final_uri = f"{base_uri}_{version}.xml"  # Append the version with an underscore and add .xml
-                # Locate the referenced XML file
-                parent_folder = os.path.dirname(xml_path)
-                referenced_file_path = os.path.join(parent_folder, final_uri)
-                if os.path.exists(referenced_file_path):
-                    # Parse the referenced XML file
-                    referenced_tree = ET.parse(referenced_file_path)
-                    referenced_root = referenced_tree.getroot()
+                base_uri = os.path.splitext(os.path.basename(uri))[0]  # Remove the .xml extension
 
-                    # Extract PropertyData and PropertyDetails
-                    material_data = {}
-                    for property_data in referenced_root.findall('.//mm:PropertyData', namespaces={'mm': 'http://www.matml.org/'}):
-                        property_id = property_data.attrib.get('property')
-                        data_value = property_data.find('./mm:Data', namespaces={'mm': 'http://www.matml.org/'}).text
-                        material_data[property_id] = {'value': data_value}
+                # Get the directory where to look for the file
+                target_dir = os.path.normpath(os.path.join(parent_folder, os.path.dirname(uri)))
 
-                    for property_details in referenced_root.findall('.//mm:PropertyDetails', namespaces={'mm': 'http://www.matml.org/'}):
-                        property_id = property_details.attrib.get('id')
-                        if property_id in material_data:
-                            material_data[property_id].update({
-                                'name': property_details.find('./mm:Name', namespaces={'mm': 'http://www.matml.org/'}).text,
-                                'units': property_details.find('./mm:Units', namespaces={'mm': 'http://www.matml.org/'}).attrib.get('name'),
-                                'description': property_details.find('./mm:Units', namespaces={'mm': 'http://www.matml.org/'}).attrib.get('description')
-                            })
+                # Look for files matching the pattern
+                matching_files = []
+                if os.path.exists(target_dir):
+                    for filename in os.listdir(target_dir):
+                        if filename.startswith(base_uri) and filename.endswith('.xml'):
+                            matching_files.append(filename)
+    
 
-                    materials.append(material_data)
+                # Get the first matching file if any exists
+                if matching_files:
+                    # Sort to ensure consistent behavior
+                    matching_files.sort()
+                    final_uri = os.path.join(target_dir, matching_files[0])
+            elif refObjectId:
+
+                # Change 'processes' to 'flows' in the path
+                flows_dir = os.path.join(os.path.dirname(parent_folder), 'flows')
+                
+                # Look for the file with the refObjectId
+                if os.path.exists(flows_dir):
+                    for filename in os.listdir(flows_dir):
+                        if filename.startswith(refObjectId) and filename.endswith('.xml'):
+                            final_uri = os.path.join(flows_dir, filename)
+                            break
+
+            if final_uri and os.path.exists(final_uri):
+                # Parse the referenced XML file
+                referenced_tree = ET.parse(final_uri)
+                referenced_root = referenced_tree.getroot()
+
+                # Extract flow properties
+                flow_properties = []
+
+                # Get the reference flow property ID
+                ref_flow_prop_id_node = referenced_root.find('.//referenceToReferenceFlowProperty', namespaces={'': 'http://lca.jrc.it/ILCD/Flow'})
+                ref_flow_prop_id = ref_flow_prop_id_node.text.strip() if ref_flow_prop_id_node is not None else None
+
+                for flow_prop in referenced_root.findall('.//flowProperty', namespaces={'': 'http://lca.jrc.it/ILCD/Flow'}):
+                    flow_entry = {}
+
+                    dataSetInternalID = flow_prop.attrib.get('dataSetInternalID', '').strip()
+
+                    # Extract name_en and name_de
+                    ref_to_flow_prop = flow_prop.find('./referenceToFlowPropertyDataSet', namespaces={'': 'http://lca.jrc.it/ILCD/Flow'})
+                    if ref_to_flow_prop is not None:
+                        names = get_multilang_from_elem(ref_to_flow_prop, './common:shortDescription')
+                        flow_entry['name_en'] = names.get('en')
+                        flow_entry['name_de'] = names.get('de')
+                    else:
+                        flow_entry['name_en'] = None
+                        flow_entry['name_de'] = None
+
+                    # Extract mean value
+                    mean_value_node = flow_prop.find('./meanValue', namespaces={'': 'http://lca.jrc.it/ILCD/Flow'})
+                    flow_entry['mean_value'] = float(mean_value_node.text.strip()) if mean_value_node is not None and mean_value_node.text else None
+
+                    # Map unit based on name
+                    if (flow_entry['name_en'] and 'volume' in flow_entry['name_en'].lower()) or \
+                    (flow_entry['name_de'] and 'volumen' in flow_entry['name_de'].lower())or \
+                    (flow_entry['name_de'] and 'volume' in flow_entry['name_de'].lower()):
+                        flow_entry['unit'] = 'm3'
+                    elif (flow_entry['name_en'] and 'mass' in flow_entry['name_en'].lower()) or \
+                        (flow_entry['name_de'] and 'masse' in flow_entry['name_de'].lower()):
+                        flow_entry['unit'] = 'kg'
+                    elif (flow_entry['name_en'] and 'weight' in flow_entry['name_en'].lower()) or \
+                        (flow_entry['name_de'] and 'gewicht' in flow_entry['name_de'].lower()):
+                        flow_entry['unit'] = 'kg'
+                    elif (flow_entry['name_en'] and 'area' in flow_entry['name_en'].lower()) or \
+                        (flow_entry['name_de'] and 'fläche' in flow_entry['name_de'].lower()):
+                        flow_entry['unit'] = 'm2'
+                    elif (flow_entry['name_en'] and 'length' in flow_entry['name_en'].lower()) or \
+                        (flow_entry['name_de'] and 'länge' in flow_entry['name_de'].lower()):
+                        flow_entry['unit'] = 'm'
+                    elif (flow_entry['name_en'] and 'piece' in flow_entry['name_en'].lower()) or \
+                        (flow_entry['name_de'] and 'stück' in flow_entry['name_de'].lower()):
+                        flow_entry['unit'] = 'pcs'
+                    else:
+                        flow_entry['unit'] = 'unknown'
+
+                    # Set reference flag
+                    flow_entry['is_reference'] = (dataSetInternalID == ref_flow_prop_id)
+
+                    # Optional: include the internal ID in the record
+                    flow_entry['dataSetInternalID'] = dataSetInternalID
+
+                    flow_properties.append(flow_entry)
+
+
+                # Extract PropertyData and PropertyDetails
+                material_data = {}
+                for property_data in referenced_root.findall('.//mm:PropertyData', namespaces={'mm': 'http://www.matml.org/'}):
+                    property_id = property_data.attrib.get('property')
+                    data_value = property_data.find('./mm:Data', namespaces={'mm': 'http://www.matml.org/'}).text
+                    material_data[property_id] = {'value': data_value}
+
+                for property_details in referenced_root.findall('.//mm:PropertyDetails', namespaces={'mm': 'http://www.matml.org/'}):
+                    property_id = property_details.attrib.get('id')
+                    if property_id in material_data:
+                        material_data[property_id].update({
+                            'name': property_details.find('./mm:Name', namespaces={'mm': 'http://www.matml.org/'}).text,
+                            'units': property_details.find('./mm:Units', namespaces={'mm': 'http://www.matml.org/'}).attrib.get('name'),
+                            'description': property_details.find('./mm:Units', namespaces={'mm': 'http://www.matml.org/'}).attrib.get('description')
+                        })
+
+                reference_flow.append({
+                    'material_properties': material_data,
+                    'flow_properties': flow_properties
+                })
 
     return {
         'process_id': process_id,
@@ -459,7 +560,7 @@ def parse_xml(xml_path):
         'admin_info': admin_info,
         'exchanges': exchanges,
         'lcia_results': lcia_results,
-        'materials': materials
+        'reference_flow': reference_flow
     }
 
 def store_data(download_dir):
@@ -490,9 +591,9 @@ def store_data(download_dir):
                 file_count += 1
 
                 # Stop processing after 50 files
-                # if file_count >= 100:
-                #     logger.info("Processed 100 files. Stopping further processing.")
-                #     break                
+                if file_count >= 50:
+                    logger.info("Processed 100 files. Stopping further processing.")
+                    break                
 
     except Exception as e:
         logger.error(f"Error storing data in the database: {e}")
@@ -632,10 +733,26 @@ def store_data_in_db(collected_data, conn):
                     compliance['approval']
                 ))
 
-            for material in item['materials']:
-                for property_id, property_data in material.items():
+            for refFlow in item['reference_flow']:
+
+                # Insert the reference flow properties 
+                for flow_property in refFlow['flow_properties']:
                     cursor.execute('''
-                        INSERT INTO materials (process_id, property_id, property_name, value, units, description)
+                        INSERT INTO flow_properties (process_id, name_en, name_de, meanamount, unit, is_reference)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    ''', (
+                        item['process_id'],
+                        flow_property.get('name_en'),
+                        flow_property.get('name_de'),
+                        flow_property.get('mean_value'),
+                        flow_property.get('unit'),
+                        flow_property.get('is_reference', False)
+                    ))
+
+                # Insert the material properties 
+                for property_id, property_data in refFlow['material_properties'].items():
+                    cursor.execute('''
+                        INSERT INTO material_properties (process_id, property_id, property_name, value, units, description)
                         VALUES (%s, %s, %s, %s, %s, %s)
                     ''', (
                         item['process_id'],
