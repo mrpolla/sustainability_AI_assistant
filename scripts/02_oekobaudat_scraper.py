@@ -590,9 +590,9 @@ def store_data(download_dir):
                 # Increment the file counter
                 file_count += 1
 
-                # Stop processing after 50 files
-                if file_count >= 50:
-                    logger.info("Processed 100 files. Stopping further processing.")
+                # Stop processing after 200 files
+                if file_count >= 200:
+                    logger.info("Processed 200 files. Stopping further processing.")
                     break                
 
     except Exception as e:
