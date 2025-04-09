@@ -1,5 +1,6 @@
 BE VERY CONCISE and list 3:
 
+
 mistral
 
 materials_response
@@ -8,8 +9,30 @@ uses_response
 '1. Acoustic Flooring: The Sone acoustic cover makes these tufted tiles suitable for sound absorption in various indoor environments such as offices, classrooms, and meeting rooms.\n2. Modular Floor Coverings: Due to their 100% recycled polyamide 6 pile material, these carpet tiles are ideal for flooring applications where sustainability is a priority, such as eco-friendly buildings or green certified projects.\n3. Resilient Underfoot Surfaces: The combination of CQuest Bio heavy backing and the pile material provides resilience underfoot, making them suitable for areas with heavy foot traffic, like offices or retail spaces.'
 
 ------------
+llama3
+
+materials_response
+'Here are the main materials:\n\n- Recycled polyamide 6 (100%)\n- Polyester felt (98% recycled)\n- Renewable wood resin\n- Glass-fleece reinforcement'
+uses_response
+'Here are three potential primary uses of Tufted tiles in a construction environment:\n\n• Flooring: As a modular carpet tile solution, Tufted tiles can be used as flooring material for various applications, such as office spaces, homes, or commercial buildings.\n• Acoustic Insulation: The Sone acoustic polyester felt backing provides excellent sound insulation properties, making Tufted tiles suitable for use in areas where noise reduction is important, such as recording studios, offices, or residential spaces.\n• Sustainable Building Design: With its high recycled content and eco-friendly backing material, Tufted tiles can be used as a sustainable building solution, particularly in projects focused on environmental sustainability, green buildings, or LEED certifications.'
 
 
+------------
+gemma:2b - worst
+
+materials_response
+"Sure, here's the information you requested:\n\n- Recycled solution dyed polyamide 6\n- CQuest Bio heavy backing\n- Sone acoustic polyester felt\n- Recycled wood resin backing"
+uses_response
+'The context does not provide any information about the primary uses of the tufted tiles in a construction environment, so I cannot generate the requested data from the context.'
+
+
+------------
+qwen:1.8b
+
+materials_response
+'- Polyamide yarn\n- Recycled wood resin (CQuest Bio)\n- Sone acoustic felt (Sone)\n- Concrete as a base material\n\nNote that the exact materials used in this product may vary depending on the specific design and production process. The maximum number of items listed above is to avoid listing multiple materials together without providing context for each material.'
+uses_response
+'- Interior wall construction: The tufted modular carpet tiles have a surface pile of 100% recycled content, which makes them ideal for interior wall construction projects.\n- Sound insulation: The tufted modular carpet tiles have a maximum total pile weight of 1500 g/ m2, which is significantly higher than that of traditional carpets. This unique feature allows the tufted modular carpet tiles to effectively insulate sound from adjacent spaces, making them ideal for sound insulation applications.\n- Fire protection: The tufted modular carpet tiles have a maximum total pile weight of 1500 g/ m2, which is significantly higher than that of traditional carpets. This unique feature allows the tufted modular carpet tiles to effectively insulate themselves from fire flames, making them ideal for fire protection applications.'
 
 
 

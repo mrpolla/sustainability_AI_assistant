@@ -14,14 +14,12 @@ load_dotenv()
 
 # Configuration
 TRANSLATIONS_FILE = "./translations/translations.csv"  # <-- Set your translations filename here
-# Available models:
-# "mistral",
-# "llama3",
-# "gemma:2b",
-# "qwen:1.8b",
-# "phi3:mini",
 DEFAULT_LLM_MODEL = "llama3"  # Default model
 MAX_PRODUCTS = 10  # Limit to 10 products
+
+# Output folder for logs and results
+OUTPUT_FOLDER = "./logs/07_get_categories_from_products"
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # DB connection settings
 DB_PARAMS = {
@@ -65,45 +63,20 @@ def translate_text(text, translations):
 
     return translations.get(formatted_text, text)  # Return original if no translation found
 
-def extract_categories_from_product(product, translations=None):
+def extract_categories_from_product(product):
     """Extract category information directly from product fields"""
-    # Initialize the categories structure
-    categories = {
-        "1": [],
-        "2": [],
-        "3": []
-    }
+    # Initialize the categories
+    categories = []
     
-    # Extract categories from product fields
+    # Add each category level if available
     if product.get('category_level_1'):
-        cat_value = product['category_level_1']
-        # Apply translation if available
-        cat_value_en = translate_text(cat_value, translations) if translations else cat_value
-        categories["1"].append({
-            "classification": cat_value,
-            "classification_en": cat_value_en,
-            "name": "Category Level 1"
-        })
+        categories.append(product['category_level_1'])
         
     if product.get('category_level_2'):
-        cat_value = product['category_level_2']
-        # Apply translation if available
-        cat_value_en = translate_text(cat_value, translations) if translations else cat_value
-        categories["2"].append({
-            "classification": cat_value,
-            "classification_en": cat_value_en,
-            "name": "Category Level 2"
-        })
+        categories.append(product['category_level_2'])
         
     if product.get('category_level_3'):
-        cat_value = product['category_level_3']
-        # Apply translation if available
-        cat_value_en = translate_text(cat_value, translations) if translations else cat_value
-        categories["3"].append({
-            "classification": cat_value,
-            "classification_en": cat_value_en,
-            "name": "Category Level 3"
-        })
+        categories.append(product['category_level_3'])
     
     return categories
 
@@ -180,9 +153,9 @@ Respond in English with complete sentences organized into clear sections."""
     
     return translated_product
 
-def extract_materials_and_uses(product, model, log_file=None):
+def extract_materials(product, model, log_file=None):
     """
-    First step of two-step approach: Extract materials and uses using a focused prompt
+    Extract materials from product information with improved prompting
     """
     # Build context from product info
     product_name = product['name_en'] if product['name_en'] else product['name_de']
@@ -201,197 +174,148 @@ Description: {description}
 Technical Description: {tech_descr}
 """
     
-    # Create the extraction prompt
-    extraction_prompt = f"""You are an expert in construction materials analyzing Environmental Product Declarations (EPDs).
+    # Create the improved materials extraction prompt
+    materials_prompt = f"""You are a constructions material specialist analyzing Environmental Product Declarations (EPDs).
 
-I need you to thoroughly analyze this construction product information and extract TWO specific types of information:
+Your task: Extract ONLY the physical materials this product is physically made from.
 
-PART 1: MATERIALS
-List ALL specific materials that this product is physically made from. Be precise, technical, and comprehensive.
-- Include exact material names (e.g., "high-density polyethylene" not just "plastic")
-- Include ALL materials mentioned in the text (minimum 3 if mentioned)
-- Do NOT include manufacturing tools or equipment
-- Do NOT include packaging materials
-- Include technical grade/type specifications if mentioned
-
-PART 2: APPLICATIONS
-List ALL specific construction applications where this product is used. Be specific and detailed.
-- Include exact applications (e.g., "thermal insulation in exterior walls" not just "insulation")
-- Include ALL applications mentioned in the text (minimum 3 if mentioned)
-- Include specific building components where the product is used
-- Include specific building types where relevant
-
-Analyze this product information carefully:
+Analyze this construction product information carefully:
 
 {combined_text}
 
-Format your answer as:
+MATERIALS INSTRUCTIONS:
+- ONLY include physical materials present in the final, installed construction product
+- DO NOT include life cycle modules (e.g., A1-A3, C3, D)
+- DO NOT include manufacturing chemicals like cleaning agents unless they remain in the final product
+- DO NOT include energy, emissions, waste, or processes
+- DO NOT include package materials or temporary substances
+- Be precise with material names (e.g., "high-density polyethylene" not just "plastic")
+- Include technical specifications of materials when mentioned
+- Focus on the main materials, not trace elements
+- Include at least 3 materials if mentioned in the text
+- Exclude substances used only during manufacturing that don't remain in the final product
 
-MATERIALS:
-- Material 1
-- Material 2
-- Material 3
+RESPOND WITH ONLY a numbered list of materials in this exact format:
+1. [First material]
+2. [Second material]
+3. [Third material]
 ...
 
-APPLICATIONS:
-- Application 1
-- Application 2
-- Application 3
-...
+DO NOT include any explanations, headers, or other text."""
 
-ONLY include these two sections with bullet points. Do not include any explanations or other text."""
-
-    # Log the extraction prompt if requested
+    # Log the materials prompt if requested
     if log_file:
-        log_file.write(f"\n\n--- MATERIALS & USES EXTRACTION PROMPT ---\n")
-        log_file.write(extraction_prompt)
+        log_file.write(f"\n\n--- MATERIALS EXTRACTION PROMPT ---\n")
+        log_file.write(materials_prompt)
     
-    # Query the LLM for extraction
-    extraction_response = query_llm(extraction_prompt, model)
+    # Query the LLM for materials extraction
+    materials_response = query_llm(materials_prompt, model)
     
-    # Log the extraction response if requested
+    # Log the materials response if requested
     if log_file:
-        log_file.write(f"\n\n--- MATERIALS & USES EXTRACTION RESPONSE ---\n")
-        log_file.write(extraction_response)
+        log_file.write(f"\n\n--- MATERIALS EXTRACTION RESPONSE ---\n")
+        log_file.write(materials_response)
     
-    # Parse the extraction response
+    # Parse the materials response
     materials = []
-    uses = []
-    
-    # Simple parsing of extraction response using sections
-    materials_section = False
-    applications_section = False
-    
-    for line in extraction_response.split('\n'):
+    for line in materials_response.split('\n'):
         line = line.strip()
-        
-        if line.lower().startswith('materials:'):
-            materials_section = True
-            applications_section = False
-            continue
-        elif line.lower().startswith('applications:'):
-            materials_section = False
-            applications_section = True
-            continue
-        
-        if line and line.startswith('-') and materials_section:
-            material = line[1:].strip()
+        # Match lines starting with numbers or bullets
+        if re.match(r'^\d+\.|\*|•|-', line):
+            # Extract the material name, removing the number/bullet
+            material = re.sub(r'^\d+\.|\*|•|-', '', line).strip()
             if material and material not in materials:
                 materials.append(material)
-        
-        if line and line.startswith('-') and applications_section:
-            use = line[1:].strip()
+    
+    return materials
+
+def extract_uses(product, model, log_file=None):
+    """
+    Extract uses/applications from product information with improved prompting
+    """
+    # Build context from product info
+    product_name = product['name_en'] if product['name_en'] else product['name_de']
+    tech_applic = product['tech_applic_en'] if product['tech_applic_en'] else ''
+    description = product['description_en'] if product['description_en'] else ''
+    tech_descr = product['tech_descr_en'] if product['tech_descr_en'] else ''
+    
+    # Combine all relevant text fields for analysis
+    combined_text = f"""
+Product Name: {product_name}
+
+Technical Application: {tech_applic}
+
+Description: {description}
+
+Technical Description: {tech_descr}
+"""
+    
+    # Create the improved uses extraction prompt
+    uses_prompt = f"""You are a construction applications specialist analyzing Environmental Product Declarations (EPDs).
+
+Your task: Extract ONLY the specific construction applications where this product is used.
+
+Analyze this construction product information carefully:
+
+{combined_text}
+
+USE CASE INSTRUCTIONS:
+- Focus ONLY on how and where the product is actually used in construction
+- Describe specific applications in buildings or structures
+- Include building components where the product is installed
+- Group similar applications into representative types
+- DO NOT include manufacturing processes or life cycle phases
+- DO NOT include very general categories
+- Focus on 3-5 most important, specific applications
+- Avoid redundancy by consolidating similar use cases
+- Give precise, specific uses rather than vague categories
+- Be concise but precise in describing each application
+
+RESPOND WITH ONLY a numbered list of applications in this exact format:
+1. [First application]
+2. [Second application]
+3. [Third application]
+...
+
+DO NOT include any explanations, headers, or other text."""
+
+    # Log the uses prompt if requested
+    if log_file:
+        log_file.write(f"\n\n--- USES EXTRACTION PROMPT ---\n")
+        log_file.write(uses_prompt)
+    
+    # Query the LLM for uses extraction
+    uses_response = query_llm(uses_prompt, model)
+    
+    # Log the uses response if requested
+    if log_file:
+        log_file.write(f"\n\n--- USES EXTRACTION RESPONSE ---\n")
+        log_file.write(uses_response)
+    
+    # Parse the uses response
+    uses = []
+    for line in uses_response.split('\n'):
+        line = line.strip()
+        # Match lines starting with numbers or bullets
+        if re.match(r'^\d+\.|\*|•|-', line):
+            # Extract the use case, removing the number/bullet
+            use = re.sub(r'^\d+\.|\*|•|-', '', line).strip()
             if use and use not in uses:
                 uses.append(use)
     
-    return {
-        "materials": materials,
-        "uses": uses,
-        "raw_extraction": extraction_response
+    return uses
+
+def create_json_output(process_id, materials, uses):
+    """
+    Create JSON output directly from extracted materials and uses
+    """
+    json_obj = {
+        "process_id": process_id,
+        "materials": materials if materials else [],
+        "uses": uses if uses else []
     }
-
-def format_into_json(process_id, extracted_data, model, categories, log_file=None):
-    """
-    Second step of two-step approach: Format extracted data into proper JSON
-    """
-    # Create a string listing the categories
-    category_text = ""
-    for level in ["1", "2", "3"]:
-        if categories[level]:
-            for cat in categories[level]:
-                classification = cat.get('classification_en', cat['classification'])
-                category_text += f"- Category Level {level}: {classification}\n"
     
-    # Create the formatting prompt
-    formatting_prompt = f"""You are an expert in construction product data standardization.
-
-Take the extracted materials and applications information and format it into a valid, complete JSON object.
-
-PROCESS ID: {process_id}
-
-EXTRACTED MATERIALS:
-{', '.join(extracted_data['materials'])}
-
-EXTRACTED APPLICATIONS:
-{', '.join(extracted_data['uses'])}
-
-PRODUCT CATEGORIES:
-{category_text}
-
-FORMAT REQUIREMENTS:
-1. Use the EXACT process_id provided: "{process_id}"
-2. Include a minimum of 3 materials (if available in the extracted data)
-3. Include a minimum of 3 applications (if available in the extracted data)
-4. Format as proper JSON with the structure shown below
-5. Do not include any comments, explanations or text outside the JSON structure
-
-JSON TEMPLATE:
-{{
-  "epd_uuid": "{process_id}",
-  "materials": [
-    "material_1",
-    "material_2",
-    "material_3"
-  ],
-  "uses": [
-    "use_case_1",
-    "use_case_2",
-    "use_case_3"
-  ]
-}}
-
-Return ONLY valid JSON. No markdown formatting, no explanations, no additional text."""
-
-    # Log the formatting prompt if requested
-    if log_file:
-        log_file.write(f"\n\n--- JSON FORMATTING PROMPT ---\n")
-        log_file.write(formatting_prompt)
-    
-    # Query the LLM for JSON formatting
-    json_response = query_llm(formatting_prompt, model)
-    
-    # Log the JSON response if requested
-    if log_file:
-        log_file.write(f"\n\n--- JSON FORMATTING RESPONSE ---\n")
-        log_file.write(json_response)
-    
-    return json_response
-
-def validate_and_fix_json(json_str):
-    """
-    Attempts to validate and fix common JSON formatting issues
-    """
-    # Try to parse as-is first
-    try:
-        json_obj = json.loads(json_str)
-        return json_obj, json_str
-    except json.JSONDecodeError:
-        pass
-    
-    # Try to extract JSON if model included explanations
-    json_pattern = r'({[\s\S]*})'
-    match = re.search(json_pattern, json_str)
-    if match:
-        json_candidate = match.group(0)
-        try:
-            json_obj = json.loads(json_candidate)
-            return json_obj, json_candidate
-        except json.JSONDecodeError:
-            pass
-    
-    # More aggressive fixes: replace single quotes, fix trailing commas
-    fixed_str = json_str.replace("'", '"')
-    fixed_str = re.sub(r',\s*}', '}', fixed_str)
-    fixed_str = re.sub(r',\s*]', ']', fixed_str)
-    
-    try:
-        json_obj = json.loads(fixed_str)
-        return json_obj, fixed_str
-    except json.JSONDecodeError:
-        pass
-    
-    # If all else fails, return None
-    return None, json_str
+    return json_obj
 
 def main():
     # Parse command line arguments
@@ -402,8 +326,6 @@ def main():
                         help=f'Maximum number of products to process (default: {MAX_PRODUCTS})')
     parser.add_argument('--skip-translation', action='store_true', 
                         help='Skip translation of German fields')
-    parser.add_argument('--example-mode', action='store_true',
-                        help='Include examples in prompts (may improve accuracy)')
     args = parser.parse_args()
     
     # Get selected model and create timestamp
@@ -411,7 +333,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Create log file for prompts and responses
-    log_filename = f"product_analysis_{selected_model}_{timestamp}.log"
+    log_filename = os.path.join(OUTPUT_FOLDER, f"product_analysis_{selected_model}_{timestamp}.log")
     print(f"Creating log file for prompts and responses: {log_filename}")
     log_file = open(log_filename, "w", encoding="utf-8")
     log_file.write(f"PRODUCT ANALYSIS LOG - Model: {selected_model}, Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -465,7 +387,7 @@ def main():
             }
             
             # Extract categories from product data
-            categories = extract_categories_from_product(product, translations)
+            categories = extract_categories_from_product(product)
             
             # STEP 1: Translate German fields when English versions are missing (if not skipped)
             if not args.skip_translation:
@@ -481,75 +403,62 @@ def main():
                     log_file.write("\nTRANSLATING MISSING ENGLISH FIELDS\n")
                     product = translate_german_fields(product, selected_model, log_file)
             
-            # STEP 2: Extract materials and uses (first step of two-step approach)
-            print(f"  > Extracting materials and uses...")
+            # STEP 2: Extract materials (separate query with improved prompt)
+            print(f"  > Extracting materials...")
             start_time = time.time()
-            extracted_data = extract_materials_and_uses(product, selected_model, log_file)
-            extraction_time = time.time() - start_time
-            print(f"  > Extraction completed in {extraction_time:.2f} seconds")
-            print(f"  > Found {len(extracted_data['materials'])} materials and {len(extracted_data['uses'])} uses")
+            materials = extract_materials(product, selected_model, log_file)
+            materials_time = time.time() - start_time
+            print(f"  > Materials extraction completed in {materials_time:.2f} seconds")
+            print(f"  > Found {len(materials)} materials: {', '.join(materials[:3])}")
             
-            # STEP 3: Format into proper JSON (second step of two-step approach)
-            print(f"  > Formatting into JSON...")
+            # STEP 3: Extract uses (separate query with improved prompt)
+            print(f"  > Extracting uses...")
             start_time = time.time()
-            json_response = format_into_json(process_id, extracted_data, selected_model, categories, log_file)
-            formatting_time = time.time() - start_time
-            print(f"  > Formatting completed in {formatting_time:.2f} seconds")
+            uses = extract_uses(product, selected_model, log_file)
+            uses_time = time.time() - start_time
+            print(f"  > Uses extraction completed in {uses_time:.2f} seconds")
+            print(f"  > Found {len(uses)} uses: {', '.join(uses[:3])}")
             
-            # Try to parse the response as JSON
-            parsed_json, clean_json = validate_and_fix_json(json_response)
+            # STEP 4: Create JSON output directly
+            json_obj = create_json_output(process_id, materials, uses)
             
             # Store results
-            if parsed_json:
-                print(f"  > Successfully parsed JSON response")
-                result = {
-                    "process_id": process_id,
-                    "name": product_name,
-                    "categories": categories,
-                    "llm_analysis": parsed_json,
-                    "raw_extraction": extracted_data,
-                    "translations_applied": not args.skip_translation,
-                    "extraction_time_seconds": extraction_time,
-                    "formatting_time_seconds": formatting_time,
-                    "total_time_seconds": extraction_time + formatting_time
-                }
-            else:
-                print(f"  > Failed to parse JSON response, storing raw response")
-                result = {
-                    "process_id": process_id,
-                    "name": product_name,
-                    "categories": categories,
-                    "llm_analysis": {
-                        "error": "Failed to parse JSON response",
-                        "raw_response": json_response
-                    },
-                    "raw_extraction": extracted_data,
-                    "translations_applied": not args.skip_translation,
-                    "extraction_time_seconds": extraction_time,
-                    "formatting_time_seconds": formatting_time,
-                    "total_time_seconds": extraction_time + formatting_time
-                }
+            result = {
+                "process_id": process_id,
+                "name": product_name,
+                "categories": categories,
+                "llm_analysis": json_obj,
+                "raw_extraction": {
+                    "materials": materials,
+                    "uses": uses
+                },
+                "translations_applied": not args.skip_translation,
+                "materials_extraction_time_seconds": materials_time,
+                "uses_extraction_time_seconds": uses_time,
+                "total_time_seconds": materials_time + uses_time
+            }
             
             results.append(result)
             
             # Save intermediate results after each product
-            output_filename = f"products_analysis_{selected_model}_{timestamp}.json"
+            output_filename = os.path.join(OUTPUT_FOLDER, f"products_analysis_{selected_model}_{timestamp}.json")
             with open(output_filename, "w", encoding="utf-8") as f:
                 json.dump(results, f, indent=2, ensure_ascii=False)
             
             print(f"  > Results saved to {output_filename}")
         
         # Save final results
-        final_output = f"products_analysis_{selected_model}_{timestamp}_final.json"
+        final_output = os.path.join(OUTPUT_FOLDER, f"products_analysis_{selected_model}_{timestamp}_final.json")
         with open(final_output, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
 
-        if not_found_translations:
-            with open(f"translations_not_found_{timestamp}.txt", "w", encoding="utf-8") as f:
-                for item in not_found_translations:
-                    f.write(f"{item}\n")
-
         print(f"Analysis completed for {len(results)} products. Final results saved to {final_output}")
+
+        final_output_data = os.path.join("data", "materials_and_uses", "materials_and_uses.json")
+        with open(final_output_data, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+
+        print(f"Analysis completed for {len(results)} products. Final results saved to {final_output_data}")
             
     except Exception as e:
         print(f"Error: {str(e)}")
