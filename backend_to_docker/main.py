@@ -226,13 +226,28 @@ async def search_products(data: SearchRequest):
         try:
             # Search in both name_en and description_en columns
             cur.execute("""
-                SELECT process_id, name_en, description_en
+                SELECT 
+                    process_id, 
+                    name_en,
+                    name_en_ai,
+                    description_en,
+                    description_en_ai,
+                    short_desc_en_ai,
+                    tech_descr_en, 
+                    tech_descr_en_ai,
+                    category_level_1,
+                    category_level_2,
+                    category_level_3
                 FROM products
                 WHERE 
                     name_en ILIKE %s OR
-                    description_en ILIKE %s
+                    name_en_ai ILIKE %s OR
+                    category_level_1 ILIKE %s OR
+                    category_level_2 ILIKE %s OR
+                    category_level_3 ILIKE %s
                 LIMIT 20;
-            """, (f"%{search_term}%", f"%{search_term}%"))
+            """, (f"%{search_term}%", f"%{search_term}%", 
+                  f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"))
             
             rows = cur.fetchall()
         except Exception as query_error:
@@ -250,7 +265,24 @@ async def search_products(data: SearchRequest):
             return JSONResponse(content={"items": []})
 
         # Format results for the frontend
-        items = [{"id": str(row[0]), "name": row[1], "description": row[2]} for row in rows]
+                # Format results for the frontend with enhanced fields
+        items = []
+        for row in rows:
+            process_id, name_en, name_en_ai, description_en, description_en_ai, short_desc_en_ai, tech_en, tech_en_ai, cat1, cat2, cat3 = row
+            
+            items.append({
+                "process_id": str(process_id),
+                "name_en": name_en,
+                "name_en_ai": name_en_ai,
+                "description_en": description_en,
+                "description_en_ai": description_en_ai,
+                "short_description_ai": short_desc_en_ai,
+                "tech_description_en": tech_en,
+                "tech_description_en_ai": tech_en_ai,
+                "category_level_1": cat1,
+                "category_level_2": cat2,
+                "category_level_3": cat3
+            })
         logger.info(f"Found {len(items)} products matching the search term.")
         
         return JSONResponse(content={"items": items})
