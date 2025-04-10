@@ -230,6 +230,23 @@ def create_database_and_tables():
             )
         ''')
 
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Indicator_Statistics (
+                stat_id SERIAL PRIMARY KEY,
+                category_level_1 TEXT,
+                category_level_2 TEXT,
+                category_level_3 TEXT,
+                indicator_key TEXT,
+                mean REAL,
+                median REAL,
+                std_dev REAL,
+                min REAL,
+                max REAL,
+                unit TEXT,
+                count INTEGER,
+            )
+        ''')
+
         conn.commit()
         logger.info("Tables created successfully.")
 
