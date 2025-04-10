@@ -1,7 +1,7 @@
 import React from "react";
 import ComparisonTable from "../ComparisonTable";
 
-const ComparisonView = ({ comparisonData, loading, error }) => {
+const ComparisonView = ({ comparisonData, loading, error, onClose }) => {
   if (loading) {
     return (
       <div
@@ -86,16 +86,33 @@ const ComparisonView = ({ comparisonData, loading, error }) => {
 
   return (
     <div>
-      <h2
+      {/* Header with title and hide button */}
+      <div
         style={{
-          color: "#90caf9",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
           borderBottom: "1px solid #444",
           paddingBottom: "0.5rem",
           marginBottom: "1.5rem",
         }}
       >
-        Comparison Results
-      </h2>
+        <h2 style={{ color: "#90caf9", margin: 0 }}>Comparison Results</h2>
+        <button
+          onClick={onClose}
+          style={{
+            padding: "0.5rem 1rem",
+            backgroundColor: "#333",
+            color: "#e0e0e0",
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer",
+            fontSize: "0.9rem",
+          }}
+        >
+          Hide Comparison
+        </button>
+      </div>
 
       <div style={{ marginBottom: "1rem" }}>
         <p

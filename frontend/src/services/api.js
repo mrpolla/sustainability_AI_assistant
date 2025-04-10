@@ -239,18 +239,64 @@ const apiRequest = async (endpoint, data, options = {}) => {
 };
 
 /**
- * Send a question to the backend API
+ * Send a simple question to the backend API (without RAG)
+ * @param {string} question - The fully formulated question to send
+ * @param {string} llmModel - Selected LLM model
+ * @returns {Promise<Object>} - The response data
+ */
+export const askQuestion = async (question, llmModel = "mistral") => {
+  try {
+    validateParams({ question }, ["question"]);
+
+    console.log(`Asking simple question with model ${llmModel}`);
+
+    const data = await apiRequest(
+      "/ask",
+      {
+        question,
+        documentIds: [], // Keep this empty array to satisfy the backend schema
+        llmModel: llmModel,
+      },
+      {
+        timeout: DEFAULT_TIMEOUT * 1.5, // 30 seconds
+        retries: 3, // More retries for AI requests
+      }
+    );
+
+    return {
+      answer: data.answer || "No answer returned from the server.",
+      metadata: data.metadata || {},
+    };
+  } catch (error) {
+    console.error(`Question request failed: ${error.message}`);
+
+    // If it's a 503 error, make sure it has the service unavailable flag
+    if (error.status === 503 && !error.isServiceUnavailable) {
+      const serviceError = new Error(
+        error.message || "The AI service is currently unavailable"
+      );
+      serviceError.isServiceUnavailable = true;
+      serviceError.status = 503;
+      throw serviceError;
+    }
+
+    throw error;
+  }
+};
+
+/**
+ * Send a question to the backend API using RAG
  * @param {string} question - The question to send
  * @param {string[]} selectedDocuments - Array of selected document IDs
  * @param {string[]} selectedIndicators - Array of selected indicator keys
  * @param {string} llmModel - Selected LLM model
  * @returns {Promise<Object>} - The response data
  */
-export const askQuestion = async (
+export const askRagQuestion = async (
   question,
   selectedDocuments = [],
   selectedIndicators = [],
-  llmModel = "Llama-3.2-1B-Instruct"
+  llmModel = "mistral"
 ) => {
   try {
     validateParams({ question }, ["question"]);
@@ -263,10 +309,10 @@ export const askQuestion = async (
       selectedIndicators = [];
     }
 
-    console.log(`Asking question with model ${llmModel}`);
+    console.log(`Asking RAG question with model ${llmModel}`);
 
     const data = await apiRequest(
-      "/ask",
+      "/askrag",
       {
         question,
         documentIds: selectedDocuments,
@@ -284,7 +330,7 @@ export const askQuestion = async (
       metadata: data.metadata || {},
     };
   } catch (error) {
-    console.error(`Question request failed: ${error.message}`);
+    console.error(`RAG question request failed: ${error.message}`);
 
     // If it's a 503 error, make sure it has the service unavailable flag
     if (error.status === 503 && !error.isServiceUnavailable) {

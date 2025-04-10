@@ -10,6 +10,7 @@ import ProductSelection from "./features/product/ProductSelection";
 import IndicatorPanel from "./features/indicator/IndicatorPanel";
 import ComparisonPanel from "./features/comparison/ComparisonPanel";
 import QuestionPanel from "./features/question/QuestionPanel";
+import AnalysisPanel from "./features/analysis/AnalysisPanel";
 
 // Custom Hooks
 import {
@@ -18,6 +19,7 @@ import {
   useIndicators,
   useComparison,
   useQuestionAnswer,
+  useAIAnalysis,
 } from "./hooks";
 
 // Constants
@@ -78,6 +80,12 @@ function App() {
   } = useQuestionAnswer(
     selectedItems,
     selectedIndicators,
+    setConnectionStatus,
+    setAiServiceStatus
+  );
+
+  const { aiAnalysis, handleAnalyseWithAI, resetAnalysis } = useAIAnalysis(
+    comparisonData,
     setConnectionStatus,
     setAiServiceStatus
   );
@@ -220,24 +228,19 @@ function App() {
               comparisonData={comparisonData}
               loading={comparisonLoading}
               error={comparisonError}
+              onClose={handleCloseComparison}
             />
-            {/* Button to hide comparison */}
-            {!comparisonLoading && (
-              <button
-                onClick={handleCloseComparison}
-                style={{
-                  marginTop: "1.5rem",
-                  padding: "0.5rem 1rem",
-                  backgroundColor: "#333",
-                  color: "#e0e0e0",
-                  border: "none",
-                  borderRadius: "4px",
-                  cursor: "pointer",
-                  fontSize: "0.9rem",
-                }}
-              >
-                Hide Comparison
-              </button>
+
+            {/* Analysis Panel */}
+            {!comparisonLoading && !comparisonError && (
+              <AnalysisPanel
+                onAnalyse={handleAnalyseWithAI}
+                aiAnalysis={aiAnalysis}
+                disabled={
+                  connectionStatus === "disconnected" ||
+                  aiServiceStatus === "unavailable"
+                }
+              />
             )}
           </div>
         )}

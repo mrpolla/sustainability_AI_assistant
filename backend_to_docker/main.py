@@ -76,7 +76,32 @@ def get_db_connection():
             detail=f"Database connection failed: {str(e)}"
         )
 
-@app.post("/ask")
+@app.post("/ask")  # Simple ask endpoint
+async def ask_simple(data: QuestionRequest):
+    question = data.question.strip()
+    llm_model = data.llmModel
+    
+    if not question:
+        return JSONResponse(
+            status_code=400,
+            content={"answer": "Question cannot be empty."}
+        )
+
+    logger.info(f"[INFO] Simple ask received: {question}")
+    logger.info(f"[INFO] Selected LLM: {llm_model}")
+
+    try:
+        answer = query_llm(question, model_name=llm_model)
+        return JSONResponse(content={"answer": answer})
+    except Exception as e:
+        logger.exception("Simple inference failed")
+        return JSONResponse(
+            status_code=503,
+            content={"answer": f"LLM error: {str(e)}"}
+        )
+
+
+@app.post("/askrag")
 async def ask_question(data: QuestionRequest):
     question = data.question.strip()
     document_ids = data.documentIds or []
@@ -209,7 +234,7 @@ Answer:"""
             status_code=503,
             content={"answer": f"I'm sorry, I'm having trouble generating a response right now. Please try again later. (Error: {str(e)})"}
         )
-
+    
 @app.post("/search")
 async def search_products(data: SearchRequest):
     search_term = data.searchTerm.strip() if data.searchTerm else ""

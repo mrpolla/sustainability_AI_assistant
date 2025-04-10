@@ -40,13 +40,15 @@ def query_llm(prompt: str, model_name: str = "mistral") -> str:
             timeout=60
         )
         duration = time.time() - start_time
-        print(f"[INFO] Model: {model} | Response Time: {duration:.2f}s")
+        print(f"[INFO] Response Time: {duration:.2f}s")
 
         if response.status_code != 200:
             print(f"[ERROR] Status Code: {response.status_code} | {response.text}")
             raise RuntimeError("Ollama returned non-200 response.")
 
         result = response.json()
+        actual_model = result.get("model", "unknown")
+        print(f"[INFO] Requested Model: {model} | Actual Model Used: {actual_model} | Response Time: {duration:.2f}s")
         return result.get("response", "[No response returned]")
     
     except Exception as e:
