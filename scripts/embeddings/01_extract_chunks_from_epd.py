@@ -175,7 +175,8 @@ def generate_chunks():
 
     return output_chunks
 
-def save_to_json(chunks, filename="epd_chunks.json"):
+def save_to_json(chunks, filename="data/chunks/epd_chunks.json"):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(chunks, f, indent=2, ensure_ascii=False)
     print(f"✅ Saved {len(chunks)} chunks to {filename}")

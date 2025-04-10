@@ -7,7 +7,7 @@ import os
 # === DB Connection ===
 def connect():
     return psycopg2.connect(
-        dbname="EDP_AI_assistant",
+        dbname="EPD_AI_assistant",
         user="postgres",
         password="admin",
         host="localhost",
