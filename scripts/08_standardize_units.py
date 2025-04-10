@@ -5,6 +5,7 @@ import re
 from dotenv import load_dotenv
 import traceback
 from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import Font, PatternFill, Border, Side
 
 # Load environment variables from .env file (for database credentials)
 load_dotenv()
@@ -345,6 +346,253 @@ def get_flow_properties(conn):
     
     return reference_props_df
 
+def calculate_statistics(indicator_data, level=3):
+    """
+    Calculate statistics (mean, min, max, range) for indicator data grouped by category and module.
+    
+    Parameters:
+    - indicator_data: DataFrame containing the data to calculate statistics from
+    - level: Category level to group by (1, 2, or 3)
+    
+    Returns a DataFrame with statistics for each category and module combination.
+    """
+    # Determine which category levels to include based on the specified level
+    group_cols = ['module']
+    if level >= 1:
+        group_cols.insert(0, 'category_level_1')
+    if level >= 2:
+        group_cols.insert(1, 'category_level_2')
+    if level >= 3:
+        group_cols.insert(2, 'category_level_3')
+    
+    # Create a grouped summary
+    stats = indicator_data.groupby(group_cols)['amount'].agg([
+        ('mean', 'mean'),
+        ('min', 'min'),
+        ('max', 'max')
+    ]).reset_index()
+    
+    # Calculate range
+    stats['range'] = stats['max'] - stats['min']
+    
+    # Sort by category
+    sort_cols = [col for col in ['category_level_1', 'category_level_2', 'category_level_3', 'module'] if col in stats.columns]
+    stats = stats.sort_values(by=sort_cols)
+    
+    # Add a column to indicate the aggregation level
+    stats['aggregation_level'] = level
+    
+    return stats
+
+def add_statistics_to_excel(writer, sheet_name, indicator_data, unit=None):
+    """
+    Add statistics to Excel sheet after product data.
+    
+    Parameters:
+    - writer: ExcelWriter object
+    - sheet_name: Name of the sheet to add statistics to
+    - indicator_data: DataFrame containing the data to calculate statistics from
+    - unit: Optional unit string to display in the statistics section
+    """
+    # Get the worksheet
+    if sheet_name in writer.sheets:
+        worksheet = writer.sheets[sheet_name]
+    else:
+        return  # Sheet doesn't exist, can't add statistics
+    
+    # Calculate statistics
+    stats = calculate_statistics(indicator_data)
+    
+    if stats.empty:
+        return  # No statistics to add
+    
+    # Find the last row with data
+    last_row = worksheet.max_row + 3  # Add 3 empty rows before statistics
+    
+    # Create styles for the statistics section
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    # Add statistics section header
+    title = "SUMMARY STATISTICS BY CATEGORY AND MODULE"
+    if unit:
+        title += f" (Unit: {unit})"
+    
+    worksheet.cell(row=last_row, column=1, value=title)
+    header_cell = worksheet.cell(row=last_row, column=1)
+    header_cell.font = header_font
+    header_cell.fill = header_fill
+    
+    # Add statistics headers
+    headers = ['Category Level 1', 'Category Level 2', 'Category Level 3', 'Module', 'Mean', 'Min', 'Max', 'Range']
+    for col_idx, header in enumerate(headers, 1):
+        cell = worksheet.cell(row=last_row + 1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin_border
+    
+    # Add statistics data
+    for row_idx, row in enumerate(stats.itertuples(), 1):
+        worksheet.cell(row=last_row + 1 + row_idx, column=1, value=row.category_level_1)
+        worksheet.cell(row=last_row + 1 + row_idx, column=2, value=row.category_level_2)
+        worksheet.cell(row=last_row + 1 + row_idx, column=3, value=row.category_level_3)
+        worksheet.cell(row=last_row + 1 + row_idx, column=4, value=row.module)
+        worksheet.cell(row=last_row + 1 + row_idx, column=5, value=row.mean)
+        worksheet.cell(row=last_row + 1 + row_idx, column=6, value=row.min)
+        worksheet.cell(row=last_row + 1 + row_idx, column=7, value=row.max)
+        worksheet.cell(row=last_row + 1 + row_idx, column=8, value=row.range)
+        
+        # Apply borders to all cells in the row
+        for col_idx in range(1, 9):
+            worksheet.cell(row=last_row + 1 + row_idx, column=col_idx).border = thin_border
+
+def create_all_statistics_sheet(writer, data_by_indicator):
+    """
+    Create a sheet with all statistics for all indicators at different category levels.
+    
+    Parameters:
+    - writer: ExcelWriter object
+    - data_by_indicator: Dictionary with indicator keys and their corresponding DataFrames
+    """
+    # Create a blank worksheet
+    if 'All Statistics' in writer.sheets:
+        worksheet = writer.sheets['All Statistics']
+    else:
+        # Create a new blank DataFrame and write it to initialize the sheet
+        pd.DataFrame().to_excel(writer, sheet_name='All Statistics')
+        worksheet = writer.sheets['All Statistics']
+    
+    # Clear any existing content by removing all rows
+    for row in worksheet.iter_rows():
+        for cell in row:
+            cell.value = None
+    
+    # Start at row 1
+    current_row = 1
+    
+    # Create styles for the statistics section
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    subheader_fill = PatternFill(start_color="E6F2FF", end_color="E6F2FF", fill_type="solid")
+    level1_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    level2_fill = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    # Add main statistics section header
+    worksheet.cell(row=current_row, column=1, value="SUMMARY STATISTICS FOR ALL INDICATORS")
+    header_cell = worksheet.cell(row=current_row, column=1)
+    header_cell.font = header_font
+    header_cell.fill = header_fill
+    
+    current_row += 2  # Add space after the main header
+    
+    # Process each indicator
+    for indicator, indicator_data in data_by_indicator.items():
+        if indicator_data.empty:
+            continue
+            
+        # Add indicator header
+        indicator_unit = indicator_data['unit'].iloc[0] if not indicator_data.empty else ""
+        
+        worksheet.cell(row=current_row, column=1, value=f"INDICATOR: {indicator} ({indicator_unit})")
+        indicator_header = worksheet.cell(row=current_row, column=1)
+        indicator_header.font = header_font
+        indicator_header.fill = subheader_fill
+        
+        current_row += 1
+        
+        # Calculate statistics for all three levels
+        all_stats = []
+        
+        for level in [3, 2, 1]:
+            level_stats = calculate_statistics(indicator_data, level)
+            if not level_stats.empty:
+                all_stats.append(level_stats)
+        
+        if all_stats:
+            # Combine all stats
+            combined_stats = pd.concat(all_stats, ignore_index=True)
+            
+            # Add level header based on aggregation_level
+            current_row += 1
+            worksheet.cell(row=current_row, column=1, value="AGGREGATION LEVEL")
+            worksheet.cell(row=current_row, column=1).font = header_font
+            worksheet.cell(row=current_row, column=1).fill = header_fill
+            
+            # Define headers based on the combined stats columns
+            headers = []
+            if 'category_level_1' in combined_stats.columns:
+                headers.append('Category Level 1')
+            if 'category_level_2' in combined_stats.columns:
+                headers.append('Category Level 2')
+            if 'category_level_3' in combined_stats.columns:
+                headers.append('Category Level 3')
+            
+            headers.extend(['Module', 'Mean', 'Min', 'Max', 'Range', 'Aggregation Level'])
+            
+            # Add headers
+            for col_idx, header in enumerate(headers, 1):
+                cell = worksheet.cell(row=current_row, column=col_idx, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.border = thin_border
+            
+            # Add all statistics data
+            for row_idx, row in enumerate(combined_stats.itertuples(), 1):
+                # Determine which columns to include based on aggregation level
+                col_offset = 0
+                
+                if hasattr(row, 'category_level_1'):
+                    worksheet.cell(row=current_row + row_idx, column=1 + col_offset, value=row.category_level_1)
+                    col_offset += 1
+                
+                if hasattr(row, 'category_level_2'):
+                    worksheet.cell(row=current_row + row_idx, column=1 + col_offset, value=row.category_level_2)
+                    col_offset += 1
+                
+                if hasattr(row, 'category_level_3'):
+                    worksheet.cell(row=current_row + row_idx, column=1 + col_offset, value=row.category_level_3)
+                    col_offset += 1
+                
+                # Add the rest of the data
+                worksheet.cell(row=current_row + row_idx, column=1 + col_offset, value=row.module)
+                worksheet.cell(row=current_row + row_idx, column=2 + col_offset, value=row.mean)
+                worksheet.cell(row=current_row + row_idx, column=3 + col_offset, value=row.min)
+                worksheet.cell(row=current_row + row_idx, column=4 + col_offset, value=row.max)
+                worksheet.cell(row=current_row + row_idx, column=5 + col_offset, value=row.range)
+                worksheet.cell(row=current_row + row_idx, column=6 + col_offset, value=row.aggregation_level)
+                
+                # Apply style based on aggregation level
+                row_fill = None
+                if row.aggregation_level == 1:
+                    row_fill = level1_fill
+                elif row.aggregation_level == 2:
+                    row_fill = level2_fill
+                
+                # Apply borders and fill to all cells in the row
+                for col_idx in range(1, len(headers) + 1):
+                    cell = worksheet.cell(row=current_row + row_idx, column=col_idx)
+                    cell.border = thin_border
+                    if row_fill:
+                        cell.fill = row_fill
+                
+            # Update current_row for the next indicator
+            current_row += len(combined_stats) + 3  # +3 for header and spacing
+        else:
+            # If no statistics, just move to the next indicator
+            current_row += 2
+
 def main():
     # Connect to the database
     conn = connect_to_db()
@@ -464,7 +712,10 @@ def main():
         print(f"Creating Excel file with {len(unique_indicators)} indicator tabs...")
         
         # Create a new Excel workbook
-        excel_filename = "indicators_by_category.xlsx"
+        excel_filename = "indicators_by_category_with_stats.xlsx"
+        
+        # Dictionary to store data by indicator for summary stats
+        indicator_data_dict = {}
         
         # Use pandas ExcelWriter with openpyxl engine
         with pd.ExcelWriter(excel_filename, engine='openpyxl') as writer:
@@ -475,6 +726,9 @@ def main():
                     
                 # Filter data for this indicator
                 indicator_data = result[result['indicator_key'] == indicator].copy()
+                
+                # Store indicator data for later use in summary stats
+                indicator_data_dict[indicator] = indicator_data
                 
                 # If no data for this indicator, skip
                 if indicator_data.empty:
@@ -522,52 +776,18 @@ def main():
                 # Write to Excel sheet
                 df_to_write.to_excel(writer, sheet_name=sheet_name, header=False, index=False)
                 
-            # Also create an 'All Data' tab
-            print("  - Creating 'All Data' tab...")
-            
-            # Sort all data
-            all_data = result.sort_values(
-                by=['indicator_key', 'category_level_1', 'category_level_2', 'category_level_3', 'name_en']
-            )
-            
-            # Create a similar process for all data with separators
-            df_all_with_gaps = []
-            last_category = None
-            last_indicator = None
-            
-            # Add header row
-            df_all_with_gaps.append(pd.Series({col: col for col in output_columns}))
-            
-            # Process rows with category and indicator separators
-            for _, row in all_data.iterrows():
-                current_indicator = row['indicator_key']
-                current_category = (
-                    row['category_level_1'], 
-                    row['category_level_2'], 
-                    row['category_level_3']
-                )
+                # Get the unit for this indicator (assuming all rows have the same unit)
+                indicator_unit = indicator_data['unit'].iloc[0] if not indicator_data.empty else ""
                 
-                # If this is a new indicator, add two empty rows
-                if last_indicator is not None and current_indicator != last_indicator:
-                    df_all_with_gaps.append(pd.Series({col: None for col in output_columns}))
-                    df_all_with_gaps.append(pd.Series({col: None for col in output_columns}))
-                    last_category = None  # Reset category tracking for new indicator
+                # Add statistics to the sheet
+                add_statistics_to_excel(writer, sheet_name, indicator_data, indicator_unit)
                 
-                # If this is a new category within the same indicator, add one empty row
-                elif last_category is not None and current_category != last_category:
-                    df_all_with_gaps.append(pd.Series({col: None for col in output_columns}))
-                
-                # Add the data row
-                df_all_with_gaps.append(pd.Series({col: row.get(col) for col in output_columns}))
-                
-                # Update tracking variables
-                last_category = current_category
-                last_indicator = current_indicator
+            # Create the 'All Statistics' tab instead of 'All Data' and 'Summary Statistics'
+            print("  - Creating 'All Statistics' tab...")
             
-            # Convert list of Series to DataFrame and write to Excel
-            df_all_to_write = pd.DataFrame(df_all_with_gaps)
-            df_all_to_write.to_excel(writer, sheet_name='All Data', header=False, index=False)
-        
+            # Create a comprehensive statistics sheet with all levels of aggregation
+            create_all_statistics_sheet(writer, indicator_data_dict)
+            
         print(f"Excel file created successfully: {excel_filename}")
         
     except Exception as e:
