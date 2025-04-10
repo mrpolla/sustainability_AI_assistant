@@ -154,12 +154,12 @@ def extract_sections_from_file(file_path, output_folder=None):
         if section_match:
             number = section_match.group(1).strip() if section_match.group(1) else ""
             title = section_match.group(2).strip()
-            full_title = f"{number}{title}" if number else title
+            full_title = f"{number} {title}" if number else title
             section_titles.append(full_title)
         elif annex_match:
             prefix = annex_match.group(1).strip()
             title = annex_match.group(2).strip()
-            full_title = f"{prefix}{title}"
+            full_title = f"{prefix} {title}"
             section_titles.append(full_title)
         else:
             # For special sections like "Bibliography" or "Index"

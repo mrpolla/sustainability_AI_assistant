@@ -147,7 +147,7 @@ async def ask_question(data: QuestionRequest):
                 placeholders = ', '.join(['%s'] * len(document_ids))
                 cur.execute(f"""
                     SELECT chunk
-                    FROM epd_embeddings
+                    FROM embeddings
                     WHERE process_id IN ({placeholders})
                     ORDER BY embedding <-> %s::vector
                     LIMIT 5;
@@ -155,7 +155,7 @@ async def ask_question(data: QuestionRequest):
             else:
                 cur.execute("""
                     SELECT chunk
-                    FROM epd_embeddings
+                    FROM embeddings
                     ORDER BY embedding <-> %s::vector
                     LIMIT 5;
                 """, (embedding,))

@@ -35,7 +35,7 @@ def create_database_and_tables():
 
         # === Create Embeddings Table ===
         cur.execute(f'''
-            CREATE TABLE IF NOT EXISTS epd_embeddings (
+            CREATE TABLE IF NOT EXISTS embeddings (
                 chunk_id TEXT PRIMARY KEY,
                 process_id TEXT,
                 embedding VECTOR({EMBEDDING_DIM}),

@@ -412,7 +412,7 @@ def insert_embeddings(chunks, batch_size=50):
                 execute_values(
                     cur,
                     """
-                    INSERT INTO epd_embeddings (chunk_id, process_id, chunk, embedding, metadata)
+                    INSERT INTO embeddings (chunk_id, process_id, chunk, embedding, metadata)
                     VALUES %s
                     ON CONFLICT (chunk_id) DO NOTHING;
                     """,
