@@ -311,19 +311,22 @@ export const askRagQuestion = async (
 
     console.log(`Asking RAG question with model ${llmModel}`);
 
-    const data = await apiRequest(
-      "/askrag",
-      {
-        question,
-        documentIds: selectedDocuments,
-        indicatorIds: selectedIndicators,
-        llmModel: llmModel,
-      },
-      {
-        timeout: DEFAULT_TIMEOUT * 1.5, // 30 seconds
-        retries: 3, // More retries for AI requests
-      }
+    const payload = {
+      question,
+      documentIds: selectedDocuments,
+      indicatorIds: selectedIndicators,
+      llmModel: llmModel,
+    };
+
+    console.log(
+      "Sending payload to /askrag:",
+      JSON.stringify(payload, null, 2)
     );
+
+    const data = await apiRequest("/askrag", payload, {
+      timeout: DEFAULT_TIMEOUT * 1.5, // 30 seconds
+      retries: 3, // More retries for AI requests
+    });
 
     return {
       answer: data.answer || "No answer returned from the server.",

@@ -41,6 +41,7 @@ app.add_middleware(
 class QuestionRequest(BaseModel):
     question: str
     documentIds: list[str] = []
+    indicatorIds: list[str] = []
     llmModel: str = "Llama-3.2-1B-Instruct"
 
 class SearchRequest(BaseModel):
@@ -64,11 +65,11 @@ DB_PARAMS = {
 }
 # PG Vector database connection settings
 PG_PARAMS = {
-    "host": os.getenv("DB_HOST"),
-    "dbname": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "port": os.getenv("DB_PORT")
+    "host": os.getenv("PG_HOST"),
+    "dbname": os.getenv("PG_NAME"),
+    "user": os.getenv("PG_USER"),
+    "password": os.getenv("PG_PASSWORD"),
+    "port": os.getenv("PG_PORT")
 }
 
 def get_db_connection():
@@ -137,6 +138,9 @@ async def ask_simple(data: QuestionRequest):
 async def ask_question(data: QuestionRequest):
     question = data.question.strip()
     document_ids = data.documentIds or []
+    indicator_ids = []  # Initialize this since it's not in the model yet
+    if hasattr(data, 'indicatorIds'):  # Check if indicatorIds exists in the request
+        indicator_ids = data.indicatorIds or []
     llm_model = data.llmModel
     
     # Input validation
@@ -149,7 +153,9 @@ async def ask_question(data: QuestionRequest):
     logger.info(f"[INFO] Question received: {question}")
     logger.info(f"[INFO] Selected LLM: {llm_model}")
     if document_ids:
-        logger.info(f"[INFO] Selected documents: {document_ids}")
+        logger.info(f"[INFO] Selected products: {document_ids}")
+    if indicator_ids:
+        logger.info(f"[INFO] Selected indicators: {indicator_ids}")
 
     # Check if embedding model is available
     if embedding_model is None:
@@ -174,33 +180,51 @@ async def ask_question(data: QuestionRequest):
         cur = conn.cursor()
         
         try:
-            # If document IDs are provided, only search within those documents
-            if document_ids:
-                placeholders = ', '.join(['%s'] * len(document_ids))
+            # Different query strategies based on what filters are provided
+            if document_ids and indicator_ids:
+                # Filter by both product IDs and indicator IDs
+                # Since we don't have a direct way to filter by indicators in the current schema,
+                # we'll use a simplified approach:
+                # 1. Use product IDs to filter chunks
+                # 2. Include indicator info in the prompt for the LLM
+                product_placeholders = ', '.join(['%s'] * len(document_ids))
                 cur.execute(f"""
                     SELECT chunk
-                    FROM embeddings
-                    WHERE process_id IN ({placeholders})
+                    FROM embeddings_small
+                    WHERE process_id IN ({product_placeholders})
                     ORDER BY embedding <-> %s::vector
                     LIMIT 5;
                 """, (*document_ids, embedding))
+            
+            elif document_ids:
+                # If only product IDs are provided, filter by products only
+                product_placeholders = ', '.join(['%s'] * len(document_ids))
+                cur.execute(f"""
+                    SELECT chunk
+                    FROM embeddings_small
+                    WHERE process_id IN ({product_placeholders})
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT 5;
+                """, (*document_ids, embedding))
+            
             else:
+                # If no product filters provided, return the most semantically relevant chunks
                 cur.execute("""
                     SELECT chunk
-                    FROM embeddings
+                    FROM embeddings_small
                     ORDER BY embedding <-> %s::vector
                     LIMIT 5;
                 """, (embedding,))
                 
             rows = cur.fetchall()
 
-            # Write chunks to a file one by one
-            working_directory = os.getcwd()  # Get the current working directory
-            file_path = os.path.join(working_directory, "fetched_chunks.txt")  # Construct the file path
+            # Write chunks to a file one by one (for debugging)
+            working_directory = os.getcwd()
+            file_path = os.path.join(working_directory, "fetched_chunks.txt")
 
             with open(file_path, "w") as file:
                 for row in rows:
-                    file.write(f"{row[0]}\n\n")  # Write each chunk followed by a newline
+                    file.write(f"{row[0]}\n\n")
                     logger.info(f"Written chunk to file: {row[0]}")
 
             logger.info(f"Chunks saved to: {file_path}")
@@ -233,14 +257,25 @@ async def ask_question(data: QuestionRequest):
             content={"answer": f"An unexpected error occurred while retrieving data: {str(e)}"}
         )
 
-    # Step 3: Construct prompt
-    context = "\n\n".join([row[0] for row in rows])
+    # Step 3: Construct prompt with product and indicator context
+    chunks_context = "\n\n".join([row[0] for row in rows])
+    
+    # Add product and indicator context to the prompt
+    product_context = ""
+    if document_ids:
+        product_context = f"The question relates to these product IDs: {', '.join(document_ids)}.\n"
+    
+    indicator_context = ""
+    if indicator_ids:
+        indicator_context = f"The question focuses on these environmental indicators: {', '.join(indicator_ids)}.\n"
+    
     prompt = f"""You are a helpful assistant that only uses the provided context to answer questions.
 
 Question: {question}
 
+{product_context}{indicator_context}
 Context:
-{context}
+{chunks_context}
 
 Answer:"""
 
@@ -248,8 +283,8 @@ Answer:"""
 
     # Step 4: Send prompt to inference service
     try:
-        
         logger.info(f"Calling LLM with model key: {llm_model}")
+        logger.info(f"Sending prompt: {prompt}")
         answer = query_llm(prompt, model_name=llm_model)
         
         if not answer or not isinstance(answer, str):

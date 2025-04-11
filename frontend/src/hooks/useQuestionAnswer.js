@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { askQuestion } from "../services/api";
+import { askRagQuestion } from "../services/api";
 
 /**
  * Hook for managing question and answer functionality
@@ -30,14 +30,19 @@ const useQuestionAnswer = (
     setQuestionError("");
 
     try {
-      const indicatorKeys = selectedIndicators
+      // Extract product IDs from selectedItems
+      const productIds = selectedItems.map((item) => item.id);
+
+      // Extract indicator names from selectedIndicators
+      const indicatorIds = selectedIndicators
         .map((indicator) => indicator?.name)
         .filter(Boolean);
 
-      const data = await askQuestion(
+      // Use askRagQuestion instead of askQuestion
+      const data = await askRagQuestion(
         question,
-        selectedItems,
-        indicatorKeys,
+        productIds,
+        indicatorIds,
         localSelectedLLM
       );
 
