@@ -17,7 +17,8 @@ const ComparisonTable = ({
   const enriched = allIndicators.find((i) => i.key === indicator.key) || {};
   const displayName = `${indicator.key} – ${enriched.name || "Unknown"}`;
   const tooltip = enriched.short_description || "";
-  // Safely extract modules from product data
+  const longDescription = enriched.long_description || "";
+
   const getModules = () => {
     const allModules = indicator.productData.flatMap((productData) =>
       Object.keys(productData?.modules || {})
@@ -25,7 +26,6 @@ const ComparisonTable = ({
     return [...new Set(allModules)].sort();
   };
 
-  // Get product data for a specific product
   const getProductData = (productId) => {
     return (
       indicator.productData.find((data) => data.productId === productId) || {
@@ -34,7 +34,6 @@ const ComparisonTable = ({
     );
   };
 
-  // Format numeric values
   const formatValue = (value) => {
     if (value == null) return "N/A";
     return typeof value === "number" ? value.toFixed(2) : value;
@@ -61,10 +60,8 @@ const ComparisonTable = ({
     fontWeight: 600,
   };
 
-  // Determine modules
   const modules = getModules();
 
-  // Render nothing if no products
   if (products.length === 0) {
     return (
       <div style={{ color: "#aaa", padding: "1rem", textAlign: "center" }}>
@@ -75,16 +72,91 @@ const ComparisonTable = ({
   console.log("🧩 Indicator Data:", indicator);
   return (
     <div style={{ marginBottom: "2rem" }}>
-      <h3
+      <div
         style={{
-          fontSize: "1.25rem",
-          fontWeight: 600,
-          color: "#90caf9",
+          display: "flex",
+          alignItems: "center",
+          gap: "0.5rem",
           marginBottom: "1rem",
         }}
       >
-        {displayName}
-      </h3>
+        <h3
+          style={{
+            fontSize: "1.25rem",
+            fontWeight: 600,
+            color: "#90caf9",
+            margin: 0,
+          }}
+        >
+          {displayName}
+        </h3>
+        <div
+          style={{
+            position: "relative",
+            display: "inline-block",
+          }}
+          onMouseEnter={(e) => {
+            const tooltip = e.currentTarget.querySelector(".tooltip-content");
+            if (tooltip) {
+              tooltip.style.opacity = "1";
+              tooltip.style.visibility = "visible";
+            }
+          }}
+          onMouseLeave={(e) => {
+            const tooltip = e.currentTarget.querySelector(".tooltip-content");
+            if (tooltip) {
+              tooltip.style.opacity = "0";
+              tooltip.style.visibility = "hidden";
+            }
+          }}
+        >
+          <div
+            style={{
+              cursor: "help",
+              backgroundColor: "#1976d2",
+              color: "white",
+              fontSize: "0.75rem",
+              fontWeight: "bold",
+              borderRadius: "50%",
+              width: "18px",
+              height: "18px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+              position: "relative",
+            }}
+          >
+            i
+            <div
+              className="tooltip-content"
+              style={{
+                position: "absolute",
+                top: "140%",
+                left: "50%",
+                transform: "translateX(-50%)",
+                backgroundColor: "#1e1e1e",
+                color: "#e0e0e0",
+                padding: "1rem",
+                border: "1px solid #90caf9",
+                borderRadius: "6px",
+                maxWidth: "500px",
+                width: "max-content",
+                zIndex: 10,
+                transition: "opacity 0.2s ease-in-out",
+                whiteSpace: "normal",
+                fontSize: "0.85rem",
+                opacity: 0,
+                visibility: "hidden",
+                textAlign: "left",
+              }}
+            >
+              <strong style={{ color: "#90caf9" }}>{tooltip}</strong>
+              <div style={{ marginTop: "0.5rem" }}>{longDescription}</div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div
         style={{
