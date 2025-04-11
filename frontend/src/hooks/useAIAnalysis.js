@@ -7,7 +7,8 @@ import { askQuestion } from "../services/api";
 const useAIAnalysis = (
   comparisonData,
   setConnectionStatus,
-  setAiServiceStatus
+  setAiServiceStatus,
+  selectedLLM
 ) => {
   // State for AI analysis
   const [aiAnalysis, setAiAnalysis] = useState({
@@ -93,7 +94,7 @@ Keep your analysis clear and helpful for someone who may not be an expert in LCA
       );
 
       // Call the API with the fully formulated question
-      const response = await askQuestion(fullyFormulatedQuestion, "mistral");
+      const response = await askQuestion(fullyFormulatedQuestion, selectedLLM);
 
       setAiAnalysis({ loading: false, result: response.answer, error: null });
     } catch (error) {
@@ -117,7 +118,7 @@ Keep your analysis clear and helpful for someone who may not be an expert in LCA
         setConnectionStatus("disconnected");
       }
     }
-  }, [comparisonData, setConnectionStatus, setAiServiceStatus]);
+  }, [comparisonData, selectedLLM, setConnectionStatus, setAiServiceStatus]);
 
   // Reset analysis
   const resetAnalysis = useCallback(() => {

@@ -31,6 +31,27 @@ const ComparisonTable = ({
     return typeof value === "number" ? value.toFixed(2) : value;
   };
 
+  const footerRowStyle = {
+    backgroundColor: "#1e1e1e",
+    color: "#90caf9",
+    fontWeight: 600,
+  };
+
+  const footerCellStyle = {
+    padding: "0.75rem",
+    textAlign: "right",
+    border: "2px solid #90caf9",
+  };
+
+  const footerLabelStyle = {
+    padding: "0.75rem",
+    textAlign: "left",
+    border: "2px solid #90caf9",
+    backgroundColor: "#1e1e1e",
+    color: "#90caf9",
+    fontWeight: 600,
+  };
+
   // Determine modules
   const modules = getModules();
 
@@ -42,7 +63,7 @@ const ComparisonTable = ({
       </div>
     );
   }
-
+  console.log("🧩 Indicator Data:", indicator);
   return (
     <div style={{ marginBottom: "2rem" }}>
       <h3
@@ -173,7 +194,40 @@ const ComparisonTable = ({
               );
             })}
           </tbody>
+          <tfoot>
+            <tr style={footerRowStyle}>
+              <td style={footerLabelStyle}>Mean</td>
+              <td style={footerCellStyle}></td>
+              {modules.map((module) => (
+                <td key={`mean-${module}`} style={footerCellStyle}>
+                  {formatValue(indicator?.stats?.[module]?.mean)}
+                </td>
+              ))}
+            </tr>
+            <tr style={footerRowStyle}>
+              <td style={footerLabelStyle}>Min</td>
+              <td style={footerCellStyle}></td>
+              {modules.map((module) => (
+                <td key={`min-${module}`} style={footerCellStyle}>
+                  {formatValue(indicator?.stats?.[module]?.min)}
+                </td>
+              ))}
+            </tr>
+            <tr style={footerRowStyle}>
+              <td style={footerLabelStyle}>Max</td>
+              <td style={footerCellStyle}></td>
+              {modules.map((module) => (
+                <td key={`max-${module}`} style={footerCellStyle}>
+                  {formatValue(indicator?.stats?.[module]?.max)}
+                </td>
+              ))}
+            </tr>
+          </tfoot>
         </table>
+        <p style={{ color: "#90caf9", fontSize: "0.9rem", marginTop: "1rem" }}>
+          Category statistics for <strong>{indicator.category}</strong> &middot;
+          Indicator: <strong>{indicator.name}</strong>
+        </p>
       </div>
     </div>
   );

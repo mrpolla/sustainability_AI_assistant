@@ -346,26 +346,21 @@ export const askRagQuestion = async (
   }
 };
 
+export const fetchFilters = async () => {
+  const response = await fetch("http://localhost:8001/filters");
+  if (!response.ok) {
+    throw new Error(`Failed to fetch filters: ${response.statusText}`);
+  }
+  return await response.json();
+};
+
 /**
  * Search for products in the database
  * @param {string} searchTerm - The search term to find products
  * @returns {Promise<Object>} - The search results
  */
-export const searchProducts = async (searchTerm) => {
-  try {
-    validateParams({ searchTerm }, ["searchTerm"]);
-
-    const data = await apiRequest("/search", { searchTerm });
-
-    return {
-      items: Array.isArray(data.items) ? data.items : [],
-      total: data.total || 0,
-      query: searchTerm,
-    };
-  } catch (error) {
-    console.error(`Search request failed: ${error.message}`);
-    throw error;
-  }
+export const searchProducts = async (filters = {}) => {
+  return await apiRequest("/search", filters);
 };
 
 /**

@@ -8,16 +8,15 @@ const useQuestionAnswer = (
   selectedItems,
   selectedIndicators,
   setConnectionStatus,
-  setAiServiceStatus
+  setAiServiceStatus,
+  selectedLLM
 ) => {
   // State for questions and answers
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
   const [questionError, setQuestionError] = useState("");
-
-  // State for LLM selection
-  const [selectedLLM, setSelectedLLM] = useState("mistral");
+  const [localSelectedLLM, setLocalSelectedLLM] = useState(selectedLLM);
 
   // Handle question submission
   const handleSubmit = useCallback(async () => {
@@ -39,7 +38,7 @@ const useQuestionAnswer = (
         question,
         selectedItems,
         indicatorKeys,
-        selectedLLM
+        localSelectedLLM
       );
 
       if (!data) {
@@ -79,7 +78,7 @@ const useQuestionAnswer = (
     question,
     selectedItems,
     selectedIndicators,
-    selectedLLM,
+    localSelectedLLM,
     setConnectionStatus,
     setAiServiceStatus,
   ]);
@@ -96,9 +95,9 @@ const useQuestionAnswer = (
     ];
 
     if (LLM_OPTIONS.includes(newValue)) {
-      setSelectedLLM(newValue);
+      setLocalSelectedLLM(newValue);
     } else {
-      setSelectedLLM("mistral");
+      setLocalSelectedLLM("mistral");
     }
   }, []);
 
@@ -108,7 +107,7 @@ const useQuestionAnswer = (
     answer,
     loading,
     questionError,
-    selectedLLM,
+    selectedLLM: localSelectedLLM,
     handleSubmit,
     handleLLMChange,
   };

@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import Header from "./components/Header";
 import ComparisonView from "./components/ComparisonView/ComparisonView";
 
@@ -27,6 +27,7 @@ const DEFAULT_LLM = "mistral";
 
 function App() {
   // Initialize all hooks
+  const [selectedLLM, setSelectedLLM] = useState(DEFAULT_LLM);
   const {
     connectionStatus,
     setConnectionStatus,
@@ -74,20 +75,21 @@ function App() {
     answer,
     loading,
     questionError,
-    selectedLLM,
     handleSubmit,
     handleLLMChange,
   } = useQuestionAnswer(
     selectedItems,
     selectedIndicators,
     setConnectionStatus,
-    setAiServiceStatus
+    setAiServiceStatus,
+    selectedLLM
   );
 
   const { aiAnalysis, handleAnalyseWithAI, resetAnalysis } = useAIAnalysis(
     comparisonData,
     setConnectionStatus,
-    setAiServiceStatus
+    setAiServiceStatus,
+    selectedLLM
   );
 
   // Set up initial data loading

@@ -4,7 +4,7 @@ import { fetchAllProductNames, searchProducts } from "../services/api";
 /**
  * Hook for managing product data and search functionality
  */
-const useProducts = (setConnectionStatus) => {
+const useProducts = (setConnectionStatus, selectedFilters = {}) => {
   // State for products
   const [allProducts, setAllProducts] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
@@ -55,20 +55,12 @@ const useProducts = (setConnectionStatus) => {
 
   // Handle search functionality
   const handleSearch = useCallback(
-    async (searchTerm) => {
-      const trimmedSearchTerm = searchTerm?.trim() || "";
-
-      if (!trimmedSearchTerm) {
-        setSearchResults([]);
-        setSearchError("");
-        return;
-      }
-
+    async (filters = {}) => {
       setSearchLoading(true);
       setSearchError("");
 
       try {
-        const data = await searchProducts(trimmedSearchTerm);
+        const data = await searchProducts(filters);
 
         if (!data) {
           throw new Error("No data returned from search request");
@@ -78,7 +70,7 @@ const useProducts = (setConnectionStatus) => {
           setSearchResults(data.items);
 
           if (data.items.length === 0) {
-            setSearchError(`No products found matching "${trimmedSearchTerm}"`);
+            setSearchError("No products found matching your filters.");
           }
         } else {
           setSearchResults([]);
