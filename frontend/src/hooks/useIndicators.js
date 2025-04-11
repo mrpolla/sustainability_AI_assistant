@@ -47,7 +47,7 @@ const useIndicators = () => {
     if (!indicator) return;
 
     setSelectedIndicators((prev) => {
-      const isAlreadySelected = prev.some((item) => item.id === indicator.id);
+      const isAlreadySelected = prev.some((item) => item.key === indicator.key);
       if (isAlreadySelected) return prev;
       return [...prev, indicator];
     });
@@ -58,7 +58,7 @@ const useIndicators = () => {
     if (!indicatorToRemove) return;
 
     setSelectedIndicators((prev) =>
-      prev.filter((indicator) => indicator.id !== indicatorToRemove.id)
+      prev.filter((indicator) => indicator.key !== indicatorToRemove.key)
     );
   }, []);
 

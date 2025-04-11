@@ -73,7 +73,7 @@ const ComparisonAnalysisFeature = ({
     prompt += `\nComparison data by indicator:\n`;
 
     data.indicators.forEach((indicator) => {
-      prompt += `\nIndicator: ${indicator.name}\n`;
+      prompt += `\nIndicator: ${indicator.key}\n`;
       prompt += `Unit: ${indicator.unit || "Not specified"}\n`;
 
       // For each product in this indicator

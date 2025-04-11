@@ -7,7 +7,16 @@ const ComparisonTable = ({
     productData: [],
   },
   products = [],
+  allIndicators = [],
 }) => {
+  console.log("🔍 indicator.key:", indicator.key);
+  console.log(
+    "📦 allIndicators keys:",
+    allIndicators.map((i) => i.key)
+  );
+  const enriched = allIndicators.find((i) => i.key === indicator.key) || {};
+  const displayName = `${indicator.key} – ${enriched.name || "Unknown"}`;
+  const tooltip = enriched.short_description || "";
   // Safely extract modules from product data
   const getModules = () => {
     const allModules = indicator.productData.flatMap((productData) =>
@@ -74,7 +83,7 @@ const ComparisonTable = ({
           marginBottom: "1rem",
         }}
       >
-        {indicator.name}
+        {displayName}
       </h3>
 
       <div
@@ -226,7 +235,7 @@ const ComparisonTable = ({
         </table>
         <p style={{ color: "#90caf9", fontSize: "0.9rem", marginTop: "1rem" }}>
           Category statistics for <strong>{indicator.category}</strong> &middot;
-          Indicator: <strong>{indicator.name}</strong>
+          Indicator: <strong>{indicator.key}</strong>
         </p>
       </div>
     </div>

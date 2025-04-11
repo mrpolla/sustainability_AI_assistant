@@ -21,7 +21,7 @@ def connect_to_db():
 def create_statistics_table(conn):
     with conn.cursor() as cur:
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS category_indicator_statistics (
+        CREATE TABLE IF NOT EXISTS indicator_statistics (
             stat_id SERIAL PRIMARY KEY,
             category_level_1 TEXT,
             category_level_2 TEXT,
@@ -75,7 +75,7 @@ def calculate_and_store_statistics(conn, data):
         with conn.cursor() as cur:
             for _, row in grouped_df.iterrows():
                 cur.execute("""
-                    INSERT INTO category_indicator_statistics (
+                    INSERT INTO indicator_statistics (
                         category_level_1, category_level_2, category_level_3,
                         indicator_key, source, module,
                         mean, median, std_dev, min, max, unit, count

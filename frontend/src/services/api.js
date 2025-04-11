@@ -422,12 +422,12 @@ export const compareProducts = async (productIds, indicators) => {
 
     // Extract indicator keys from indicator objects
     const indicatorKeys = indicators.map((indicator) => {
-      if (!indicator || typeof indicator !== "object" || !indicator.name) {
+      if (!indicator || typeof indicator !== "object" || !indicator.key) {
         throw new Error(
           "Each indicator must be an object with a name property"
         );
       }
-      return indicator.name;
+      return indicator.key;
     });
 
     const data = await apiRequest(

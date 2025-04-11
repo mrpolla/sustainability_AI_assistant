@@ -231,6 +231,7 @@ function App() {
               loading={comparisonLoading}
               error={comparisonError}
               onClose={handleCloseComparison}
+              allIndicators={allIndicators}
             />
 
             {/* Analysis Panel */}

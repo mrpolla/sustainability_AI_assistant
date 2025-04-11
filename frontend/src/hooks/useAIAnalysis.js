@@ -46,7 +46,7 @@ const useAIAnalysis = (
       let comparisonDetails = "";
 
       comparisonData.indicators.forEach((indicator) => {
-        comparisonDetails += `\nIndicator: ${indicator.name} (${
+        comparisonDetails += `\nIndicator: ${indicator.key} (${
           indicator.unit || "no unit"
         })\n`;
 

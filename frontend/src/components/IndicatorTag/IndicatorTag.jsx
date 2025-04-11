@@ -17,6 +17,7 @@ const IndicatorTag = ({ indicator, onRemove }) => {
   return (
     <div
       onDoubleClick={handleDoubleClick}
+      title={indicator.short_description || ""}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -40,7 +41,7 @@ const IndicatorTag = ({ indicator, onRemove }) => {
           textOverflow: "ellipsis",
         }}
       >
-        {indicator.name}
+        {indicator.key} - {indicator.name}
       </span>
       <button
         onClick={handleRemoveClick}

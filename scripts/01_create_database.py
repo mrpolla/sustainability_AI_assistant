@@ -231,7 +231,7 @@ def create_database_and_tables():
         ''')
 
         cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Indicator_Statistics (
+            CREATE TABLE IF NOT EXISTS Indicator_Statistics (
                 stat_id SERIAL PRIMARY KEY,
                 category_level_1 TEXT,
                 category_level_2 TEXT,
@@ -243,7 +243,25 @@ def create_database_and_tables():
                 min REAL,
                 max REAL,
                 unit TEXT,
-                count INTEGER,
+                count INTEGER
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Indicators (
+                indicator_key TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                short_description TEXT,
+                long_description TEXT
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Modules (
+                module_code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                short_description TEXT,
+                long_description TEXT
             )
         ''')
 

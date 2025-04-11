@@ -12,7 +12,7 @@ const IndicatorSelection = ({
   const handleIndicatorSelect = (indicator) => {
     // Check if the indicator is already selected
     const isAlreadySelected = selectedIndicators.some(
-      (selected) => selected.id === indicator.id
+      (selected) => selected.id === indicator.key
     );
 
     // Only add if not already selected

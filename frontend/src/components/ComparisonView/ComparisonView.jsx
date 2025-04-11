@@ -1,7 +1,13 @@
 import React from "react";
 import ComparisonTable from "../ComparisonTable";
 
-const ComparisonView = ({ comparisonData, loading, error, onClose }) => {
+const ComparisonView = ({
+  comparisonData,
+  loading,
+  error,
+  onClose,
+  allIndicators,
+}) => {
   if (loading) {
     return (
       <div
@@ -126,9 +132,10 @@ const ComparisonView = ({ comparisonData, loading, error, onClose }) => {
 
       {indicators.map((indicator, index) => (
         <ComparisonTable
-          key={`${indicator.name}-${index}`}
+          key={`${indicator.key}-${index}`}
           indicator={indicator}
           products={products}
+          allIndicators={allIndicators}
           modules={modules}
         />
       ))}

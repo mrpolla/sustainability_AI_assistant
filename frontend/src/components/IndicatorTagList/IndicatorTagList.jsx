@@ -31,7 +31,7 @@ const IndicatorTagList = ({ selectedIndicators, onRemoveIndicator }) => {
     >
       {selectedIndicators.map((indicator) => (
         <IndicatorTag
-          key={indicator.id}
+          key={indicator.key}
           indicator={indicator}
           onRemove={onRemoveIndicator}
         />

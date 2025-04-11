@@ -37,9 +37,12 @@ const IndicatorSearch = ({ indicatorList = [], onIndicatorSelect }) => {
     const filtered = indicatorList
       .filter(
         (indicator) =>
-          indicator.name &&
-          typeof indicator.name === "string" &&
-          indicator.name.toLowerCase().includes(searchTermLower)
+          (indicator.name &&
+            typeof indicator.name === "string" &&
+            indicator.name.toLowerCase().includes(searchTermLower)) ||
+          (indicator.key &&
+            typeof indicator.key === "string" &&
+            indicator.key.toLowerCase().includes(searchTermLower))
       )
       .slice(0, 10); // Limit to 10 suggestions
 
@@ -115,6 +118,7 @@ const IndicatorSearch = ({ indicatorList = [], onIndicatorSelect }) => {
             <div
               key={suggestion.id || index}
               onClick={() => handleSuggestionClick(suggestion)}
+              title={suggestion.short_description || ""}
               style={{
                 padding: "0.75rem 1rem",
                 borderBottom:
@@ -131,7 +135,10 @@ const IndicatorSearch = ({ indicatorList = [], onIndicatorSelect }) => {
                 e.currentTarget.style.backgroundColor = "#1e1e1e";
               }}
               dangerouslySetInnerHTML={{
-                __html: highlightMatch(suggestion.name, searchTerm),
+                __html: highlightMatch(
+                  `${suggestion.key} - ${suggestion.name}`,
+                  searchTerm
+                ),
               }}
             />
           ))}

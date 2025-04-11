@@ -537,53 +537,57 @@ async def get_all_products():
 @app.post("/indicators")
 async def get_all_indicators():
     """
-    Get all unique indicator_key values from lcia_results and exchanges tables
+    Get all indicators with metadata from the indicators table
     """
-    logger.info("[INFO] Fetching all unique indicators for autocomplete")
-    
+    logger.info("[INFO] Fetching indicators with descriptions from database")
+
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
+
         try:
-            # Get unique indicator_key values from both tables
             cur.execute("""
-                SELECT DISTINCT indicator_key FROM (
-                    SELECT indicator_key FROM lcia_results
-                    UNION
-                    SELECT indicator_key FROM exchanges
-                ) AS combined_indicators
-                WHERE indicator_key IS NOT NULL AND indicator_key <> ''
-                ORDER BY indicator_key
+                SELECT 
+                    indicator_key, 
+                    name, 
+                    short_description, 
+                    long_description
+                FROM indicators
+                WHERE indicator_key IS NOT NULL AND name IS NOT NULL
+                ORDER BY indicator_key;
             """)
-            
             rows = cur.fetchall()
+
         except Exception as query_error:
             logger.exception("Database query error while fetching indicators")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Database query error: {str(query_error)}"
-            )
+            raise HTTPException(status_code=500, detail=str(query_error))
+
         finally:
             cur.close()
             conn.close()
 
-        # Format indicators for the frontend
-        indicators = [{"id": i, "name": row[0]} for i, row in enumerate(rows, start=1)]
-        logger.info(f"Fetched {len(indicators)} unique indicators")
-        
+        indicators = [
+            {
+                "key": indicator_key,
+                "name": name,
+                "short_description": short_desc,
+                "long_description": long_desc
+            }
+            for indicator_key, name, short_desc, long_desc in rows
+        ]
+
+        logger.info(f"Fetched {len(indicators)} indicators")
         return JSONResponse(content={"indicators": indicators})
-        
+
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        error_msg = f"Unexpected error while fetching indicators: {str(e)}"
-        logger.exception(error_msg)
+        logger.exception("Unexpected error fetching indicators")
         return JSONResponse(
-            status_code=500, 
-            content={"error": error_msg}
+            status_code=500,
+            content={"error": f"Unexpected error: {str(e)}"}
         )
+
 
 @app.post("/compare")
 async def compare_products(data: dict):
@@ -668,7 +672,7 @@ async def compare_products(data: dict):
 
                 cur.execute(f"""
                     SELECT indicator_key, module, mean, min, max, unit
-                    FROM category_indicator_statistics
+                    FROM indicator_statistics
                     WHERE indicator_key IN ({stats_indicator_placeholders})
                     AND module IN ({stats_module_placeholders})
                     AND category_level_1 = %s
@@ -753,7 +757,7 @@ async def compare_products(data: dict):
             "products": products,
             "indicators": [
                 {
-                    "name": indicator_key,
+                    "key": indicator_key,
                     "unit": data.get("unit", ""),
                     "category": f"{category_level_1} / {category_level_2} / {category_level_3}",
                     "stats": indicator_stats.get(indicator_key, {}),
