@@ -426,6 +426,26 @@ const ComparisonTable = ({
             })}
           </tbody>
           <tfoot>
+            {/* New spanning footer row */}
+            <tr
+              style={{
+                ...footerRowStyle,
+                height: "20px", // Half the height of normal rows
+                backgroundColor: "#0d47a1",
+              }}
+            >
+              <td
+                colSpan={modules.length + 2}
+                style={{
+                  padding: "0.375rem",
+                  border: "2px solid #90caf9",
+                  fontSize: "0.8rem",
+                  fontStyle: "italic",
+                }}
+              >
+                Statistics across category: {indicator.category}
+              </td>
+            </tr>
             <tr style={footerRowStyle}>
               <td style={footerLabelStyle}>Mean</td>
               <td style={footerCellStyle}></td>
@@ -456,7 +476,6 @@ const ComparisonTable = ({
           </tfoot>
         </table>
         <p style={{ color: "#90caf9", fontSize: "0.9rem", marginTop: "1rem" }}>
-          Category statistics for <strong>{indicator.category}</strong> &middot;
           Indicator: <strong>{indicator.key}</strong> &middot; Unit:{" "}
           <strong>{normalizedUnit}</strong>
         </p>
