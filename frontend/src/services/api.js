@@ -300,6 +300,7 @@ export const askRagQuestion = async (
 ) => {
   try {
     validateParams({ question }, ["question"]);
+    console.log(`Documents ${selectedDocuments}`);
 
     // Ensure arrays are properly formatted
     const documentIds = Array.isArray(selectedDocuments)

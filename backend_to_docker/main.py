@@ -10,6 +10,7 @@ import traceback
 from dotenv import load_dotenv
 from llm_utils import query_llm
 import math
+from query_logger import QueryLogger
 
 # Setup logging
 logging.basicConfig(
@@ -21,6 +22,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+query_logger = QueryLogger()
 
 # Load env vars
 load_dotenv()
@@ -109,47 +111,868 @@ def sanitize_for_json(obj):
             return None
     return obj
 
-@app.post("/ask")  # Simple ask endpoint
-async def ask_simple(data: QuestionRequest):
-    question = data.question.strip()
-    llm_model = data.llmModel
-    
-    if not question:
-        return JSONResponse(
-            status_code=400,
-            content={"answer": "Question cannot be empty."}
-        )
+def classify_question(question: str) -> str:
+    """
+    Classifies a user's sustainability question into a known category label.
+    """
+    classification_prompt = f"""
+You are a classifier that analyzes sustainability-related questions about building products, circularity, and environmental indicators.
 
-    logger.info(f"[INFO] Simple ask received: {question}")
-    logger.info(f"[INFO] Selected LLM: {llm_model}")
+Classify the user’s question into one of the following categories:
+
+1. theory_only – General sustainability concepts, definitions, or methods. These do not refer to specific products, materials, or comparison/evaluation.
+   - Examples: What is circularity? What is an EPD? What is LCA? What is a declared unit?
+
+2. comparison_question – Questions that compare or evaluate selected products or indicators.
+   - Examples: Why does Product A have a higher GWP than Product B? Are these bricks more circular than those ones?
+
+3. hybrid_theory_comparison – Like comparison_question, but needing theoretical explanation to interpret differences.
+   - Examples: Why is the ADP value for Product A higher? Why is the circularity of these tiles questioned?
+
+4. new_product_query – Mentions products not in the current selection, or unknown to the system.
+   - Examples: Is straw insulation sustainable? What about using mycelium-based bricks?
+
+5. indicator_explanation – Asks to explain or define a measurable environmental impact indicator (e.g., from LCIA or exchange categories).
+   - Examples: What does POCP mean? What is PENRE? What is ADPE?
+
+6. recommendation_query – Asks for the best product or material based on sustainability criteria.
+   - Examples: What’s the most circular insulation material? What’s best for low-carbon facades?
+
+7. product_followup – Asks for clarification or explanation about already selected products, without making direct comparisons or asking for recommendations.
+   - Examples: Can you explain more about the lifecycle of these doors? What materials are reused in this group?
+
+Respond with only one of the following labels:
+theory_only, comparison_question, hybrid_theory_comparison, new_product_query, indicator_explanation, recommendation_query, product_followup
+
+Examples:
+Q: What is an EPD?
+A: theory_only
+
+Q: Are these products circular?
+A: product_followup
+
+Q: What is POCP?
+A: indicator_explanation
+
+Q: What’s the most circular roofing material?
+A: recommendation_query
+
+Q: Why is the ADPF value for Product A higher?
+A: hybrid_theory_comparison
+
+Q: What materials are reused in these selected products?
+A: product_followup
+
+Now classify this question:
+Q: {question}
+
+A:
+""".strip()
 
     try:
-        answer = query_llm(question, model_name=llm_model)
-        return JSONResponse(content={"answer": answer})
-    except Exception as e:
-        logger.exception("Simple inference failed")
-        return JSONResponse(
-            status_code=503,
-            content={"answer": f"LLM error: {str(e)}"}
-        )
+        raw_response = query_llm(classification_prompt)
+        label = raw_response.strip().lower()
 
+        valid_labels = {
+            "theory_only",
+            "comparison_question",
+            "hybrid_theory_comparison",
+            "new_product_query",
+            "indicator_explanation",
+            "recommendation_query",
+            "product_followup"
+        }
+
+        if label in valid_labels:
+            return label
+        else:
+            logger.warning(f"Classifier returned unexpected label: {label}")
+            return "unknown"
+    except Exception as e:
+        logger.exception("Classification failed")
+        return "unknown"
+
+# RAG helper functions
+def get_theory_chunks(embedding, limit=5):
+    """Retrieves theoretical chunks from vector database."""
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'theory'
+                ORDER BY embedding <-> %s::vector
+                LIMIT %s;
+            """, (embedding, limit))
+            
+            return [row[0] for row in cur.fetchall()]
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.exception("Error retrieving theory chunks")
+        return []
+
+def get_epd_chunks(embedding, document_ids=None, limit=5):
+    """Retrieves product data chunks from vector database."""
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        try:
+            if document_ids:
+                # Filter by document IDs
+                product_placeholders = ', '.join(['%s'] * len(document_ids))
+                cur.execute(f"""
+                    SELECT chunk
+                    FROM embeddings
+                    WHERE process_id IN ({product_placeholders})
+                    AND metadata->>'source' = 'epd'
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT %s;
+                """, (*document_ids, embedding, limit))
+            else:
+                # No filter, get most relevant chunks
+                cur.execute("""
+                    SELECT chunk
+                    FROM embeddings
+                    WHERE metadata->>'source' = 'epd'
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT %s;
+                """, (embedding, limit))
+                
+            return [row[0] for row in cur.fetchall()]
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.exception("Error retrieving EPD chunks")
+        return []
+
+def search_epd_by_term(search_term, limit=5):
+    """Searches EPD data by text search term."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            # Basic text search in product names and descriptions
+            cur.execute("""
+                SELECT process_id, name_en, description_en
+                FROM products
+                WHERE 
+                    name_en ILIKE %s OR
+                    description_en ILIKE %s
+                LIMIT %s;
+            """, (f"%{search_term}%", f"%{search_term}%", limit))
+            
+            product_ids = [str(row[0]) for row in cur.fetchall()]
+            
+            if product_ids:
+                return get_epd_chunks(None, product_ids, limit)
+            return []
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.exception(f"Error searching EPD by term: {search_term}")
+        return []
+
+def get_indicator_info(indicator_ids):
+    """Retrieves detailed information about indicators."""
+    if not indicator_ids:
+        return []
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            placeholders = ', '.join(['%s'] * len(indicator_ids))
+            cur.execute(f"""
+                SELECT 
+                    indicator_key, 
+                    name, 
+                    short_description, 
+                    long_description
+                FROM indicators
+                WHERE indicator_key IN ({placeholders})
+            """, tuple(indicator_ids))
+            
+            indicators = []
+            for row in cur.fetchall():
+                indicators.append({
+                    "key": row[0],
+                    "name": row[1],
+                    "short_description": row[2],
+                    "long_description": row[3]
+                })
+            return indicators
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.exception("Error retrieving indicator information")
+        return []
+
+def get_product_info(document_ids):
+    """Retrieves comprehensive information about products with fallbacks for AI-generated content."""
+    if not document_ids:
+        return []
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            placeholders = ', '.join(['%s'] * len(document_ids))
+            cur.execute(f"""
+                SELECT 
+                    process_id, 
+                    name_en,
+                    name_en_ai,
+                    description_en,
+                    description_en_ai,
+                    short_desc_en_ai,
+                    tech_descr_en, 
+                    tech_descr_en_ai,
+                    category_level_1,
+                    category_level_2,
+                    category_level_3
+                FROM products
+                WHERE process_id IN ({placeholders})
+            """, tuple(document_ids))
+            
+            products = []
+            for row in cur.fetchall():
+                (process_id, name_en, name_en_ai, description_en, description_en_ai, 
+                 short_desc_en_ai, tech_en, tech_en_ai, cat1, cat2, cat3) = row
+                
+                # Use fallbacks where needed
+                name = name_en if name_en else name_en_ai
+                description = description_en if description_en else description_en_ai
+                tech_description = tech_en if tech_en else tech_en_ai
+                
+                products.append({
+                    "id": str(process_id),
+                    "name": name,
+                    "description": description,
+                    "short_description": short_desc_en_ai,
+                    "technical_description": tech_description,
+                    "category_level_1": cat1,
+                    "category_level_2": cat2,
+                    "category_level_3": cat3,
+                    # Include original fields for reference
+                    "name_en": name_en,
+                    "name_en_ai": name_en_ai,
+                    "description_en": description_en,
+                    "description_en_ai": description_en_ai,
+                    "short_desc_en_ai": short_desc_en_ai,
+                    "tech_descr_en": tech_en,
+                    "tech_descr_en_ai": tech_en_ai
+                })
+            return products
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.exception("Error retrieving product information")
+        return []
+
+def get_product_indicators(document_ids, indicator_ids):
+    """
+    Retrieves product-specific indicator values from LCIA results and exchanges.
+    
+    Args:
+        document_ids: List of product IDs
+        indicator_ids: List of indicator keys
+        
+    Returns:
+        Dictionary mapping product IDs to their indicator values
+    """
+    if not document_ids or not indicator_ids:
+        return {}
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        try:
+            product_indicators = {}
+            
+            # Set up placeholders for SQL query
+            product_placeholders = ', '.join(['%s'] * len(document_ids))
+            indicator_placeholders = ', '.join(['%s'] * len(indicator_ids))
+            
+            # Get LCIA results
+            cur.execute(f"""
+                SELECT l.process_id, l.indicator_key, l.unit, lm.module, lm.amount
+                FROM lcia_results l
+                JOIN lcia_moduleamounts lm ON l.lcia_id = lm.lcia_id
+                WHERE l.process_id IN ({product_placeholders})
+                AND l.indicator_key IN ({indicator_placeholders})
+            """, tuple(document_ids) + tuple(indicator_ids))
+            
+            lcia_rows = cur.fetchall()
+            
+            # Get exchange results
+            cur.execute(f"""
+                SELECT e.process_id, e.indicator_key, e.unit, em.module, em.amount
+                FROM exchanges e
+                JOIN exchange_moduleamounts em ON e.exchange_id = em.exchange_id
+                WHERE e.process_id IN ({product_placeholders})
+                AND e.indicator_key IN ({indicator_placeholders})
+            """, tuple(document_ids) + tuple(indicator_ids))
+            
+            exchange_rows = cur.fetchall()
+            
+            # Process LCIA results
+            for row in lcia_rows:
+                process_id, indicator_key, unit, module, amount = row
+                process_id = str(process_id)
+                
+                if process_id not in product_indicators:
+                    product_indicators[process_id] = {}
+                    
+                if indicator_key not in product_indicators[process_id]:
+                    product_indicators[process_id][indicator_key] = {
+                        "unit": unit,
+                        "modules": {}
+                    }
+                
+                if module:
+                    product_indicators[process_id][indicator_key]["modules"][module] = amount
+            
+            # Process exchange results
+            for row in exchange_rows:
+                process_id, indicator_key, unit, module, amount = row
+                process_id = str(process_id)
+                
+                if process_id not in product_indicators:
+                    product_indicators[process_id] = {}
+                    
+                if indicator_key not in product_indicators[process_id]:
+                    product_indicators[process_id][indicator_key] = {
+                        "unit": unit,
+                        "modules": {}
+                    }
+                
+                if module:
+                    product_indicators[process_id][indicator_key]["modules"][module] = amount
+            
+            return product_indicators
+            
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.exception("Error retrieving product-specific indicator values")
+        return {}
+    
+def get_statistically_important_indicators(document_ids, max_indicators=8):
+    """
+    Retrieves only statistically significant indicator values for specified products.
+    Selects indicators that are notably high or low compared to category averages.
+    
+    Args:
+        document_ids: List of product IDs
+        max_indicators: Maximum number of indicators to return per product
+        
+    Returns:
+        Dictionary mapping product IDs to their most statistically significant indicator values
+    """
+    if not document_ids:
+        return {}
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        try:
+            # First get the product category information
+            product_categories = {}
+            product_placeholders = ', '.join(['%s'] * len(document_ids))
+            cur.execute(f"""
+                SELECT 
+                    process_id, 
+                    category_level_1, 
+                    category_level_2, 
+                    category_level_3
+                FROM products
+                WHERE process_id IN ({product_placeholders})
+            """, tuple(document_ids))
+            
+            for row in cur.fetchall():
+                process_id, cat1, cat2, cat3 = row
+                process_id = str(process_id)
+                product_categories[process_id] = {
+                    "category_level_1": cat1,
+                    "category_level_2": cat2,
+                    "category_level_3": cat3
+                }
+            
+            # Get LCIA results and exchange results
+            product_indicators = {}
+            lcia_results = {}
+            
+            # Get LCIA results for all indicators
+            cur.execute(f"""
+                SELECT l.process_id, l.indicator_key, l.unit, lm.module, lm.amount
+                FROM lcia_results l
+                JOIN lcia_moduleamounts lm ON l.lcia_id = lm.lcia_id
+                WHERE l.process_id IN ({product_placeholders})
+            """, tuple(document_ids))
+            
+            for row in cur.fetchall():
+                process_id, indicator_key, unit, module, amount = row
+                process_id = str(process_id)
+                
+                if process_id not in lcia_results:
+                    lcia_results[process_id] = {}
+                
+                if indicator_key not in lcia_results[process_id]:
+                    lcia_results[process_id][indicator_key] = {
+                        "unit": unit,
+                        "modules": {}
+                    }
+                
+                if module and amount is not None:
+                    lcia_results[process_id][indicator_key]["modules"][module] = amount
+            
+            # Now get statistics for each indicator to determine significance
+            for process_id, indicators in lcia_results.items():
+                if process_id not in product_categories:
+                    continue
+                    
+                cat1 = product_categories[process_id]["category_level_1"]
+                cat2 = product_categories[process_id]["category_level_2"]
+                cat3 = product_categories[process_id]["category_level_3"]
+                
+                # Process each indicator to calculate its statistical significance
+                indicator_significance = []
+                
+                for indicator_key, data in indicators.items():
+                    for module, value in data["modules"].items():
+                        # Get statistics for this indicator/module combination
+                        cur.execute("""
+                            SELECT mean, std_dev, min, max
+                            FROM indicator_statistics
+                            WHERE indicator_key = %s
+                            AND module = %s
+                            AND category_level_1 = %s
+                            AND category_level_2 = %s
+                            AND category_level_3 = %s
+                        """, (indicator_key, module, cat1, cat2, cat3))
+                        
+                        stat_row = cur.fetchone()
+                        if stat_row:
+                            mean, std_dev, min_val, max_val = stat_row
+                            
+                            # Skip if statistics are missing
+                            if mean is None or std_dev is None or std_dev == 0:
+                                continue
+                                
+                            # Calculate z-score to measure how far from the mean
+                            z_score = abs((value - mean) / std_dev) if std_dev > 0 else 0
+                            
+                            # Calculate percentile position
+                            range_size = max_val - min_val if max_val is not None and min_val is not None else 1
+                            if range_size > 0:
+                                percentile = (value - min_val) / range_size if range_size > 0 else 0.5
+                            else:
+                                percentile = 0.5
+                            
+                            # Higher z-score means more statistically significant
+                            indicator_significance.append({
+                                "indicator_key": indicator_key,
+                                "module": module,
+                                "value": value,
+                                "unit": data["unit"],
+                                "z_score": z_score,
+                                "percentile": percentile,
+                                "is_high": value > mean,
+                                "is_low": value < mean
+                            })
+                
+                # Sort by statistical significance (z-score)
+                indicator_significance.sort(key=lambda x: x["z_score"], reverse=True)
+                
+                # Initialize product_indicators for this product
+                product_indicators[process_id] = {}
+                
+                # Take top significant indicators, but try to balance high and low values
+                high_indicators = [ind for ind in indicator_significance if ind["is_high"]]
+                low_indicators = [ind for ind in indicator_significance if ind["is_low"]]
+                
+                # Take up to half from high values and half from low values
+                half_max = max_indicators // 2
+                selected_high = high_indicators[:half_max]
+                selected_low = low_indicators[:half_max]
+                
+                # If we didn't use all slots, fill with the remaining most significant
+                remaining_slots = max_indicators - len(selected_high) - len(selected_low)
+                if remaining_slots > 0:
+                    # Filter out already selected
+                    selected_keys = [(ind["indicator_key"], ind["module"]) for ind in selected_high + selected_low]
+                    remaining = [
+                        ind for ind in indicator_significance 
+                        if (ind["indicator_key"], ind["module"]) not in selected_keys
+                    ]
+                    
+                    # Add remaining most significant
+                    selected_high.extend(remaining[:remaining_slots])
+                
+                # Combine and process selected indicators
+                selected_indicators = selected_high + selected_low
+                
+                for ind in selected_indicators:
+                    indicator_key = ind["indicator_key"]
+                    if indicator_key not in product_indicators[process_id]:
+                        product_indicators[process_id][indicator_key] = {
+                            "unit": ind["unit"],
+                            "modules": {},
+                            "significance": {}  # Add significance info
+                        }
+                    
+                    product_indicators[process_id][indicator_key]["modules"][ind["module"]] = ind["value"]
+                    product_indicators[process_id][indicator_key]["significance"][ind["module"]] = {
+                        "z_score": ind["z_score"],
+                        "percentile": ind["percentile"],
+                        "is_high": ind["is_high"],
+                        "is_low": ind["is_low"]
+                    }
+            
+            # Fetch metadata for included indicators
+            all_indicator_keys = set()
+            for process_indicators in product_indicators.values():
+                all_indicator_keys.update(process_indicators.keys())
+            
+            if all_indicator_keys:
+                indicator_placeholders = ', '.join(['%s'] * len(all_indicator_keys))
+                cur.execute(f"""
+                    SELECT 
+                        indicator_key, 
+                        name, 
+                        short_description
+                    FROM indicators
+                    WHERE indicator_key IN ({indicator_placeholders})
+                """, tuple(all_indicator_keys))
+                
+                indicator_metadata = {}
+                for row in cur.fetchall():
+                    indicator_key, name, short_description = row
+                    indicator_metadata[indicator_key] = {
+                        "name": name,
+                        "short_description": short_description
+                    }
+                
+                # Add metadata to the product indicators
+                for process_id in product_indicators:
+                    for indicator_key in list(product_indicators[process_id].keys()):
+                        if indicator_key in indicator_metadata:
+                            product_indicators[process_id][indicator_key]["name"] = indicator_metadata[indicator_key]["name"]
+                            product_indicators[process_id][indicator_key]["description"] = indicator_metadata[indicator_key]["short_description"]
+            
+            return product_indicators
+            
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.exception("Error retrieving statistically important indicators")
+        return {}
+    
+# Prompt generation
+# Modify the build_specialized_prompt function to include the module integrity warning
+def build_specialized_prompt(category, question, chunks_context, product_info=None, indicator_info=None, product_indicators=None):
+    """
+    Builds a specialized prompt based on question category and available context.
+    """
+    # Base context
+    base_context = chunks_context if chunks_context else "No relevant context found."
+    
+    # Format product info
+    product_context = ""
+    if product_info:
+        # Create detailed product descriptions with indicator values
+        product_details = []
+        for p in product_info:
+            product_id = p['id']
+            product_detail = [
+                f"Product {product_id}: {p['name']}",
+                f"  Category: {p['category_level_1']}/{p['category_level_2']}/{p['category_level_3']}",
+                f"  Description: {p['description']}",
+            ]
+            
+            # Add technical description if available and not too long
+            if p.get('technical_description') and len(p.get('technical_description')) < 250:
+                product_detail.append(f"  Technical Description: {p['technical_description']}")
+                
+            # Add short description if available, different, and not too long
+            if (p.get('short_description') and p['short_description'] != p['description'] 
+                and len(p.get('short_description')) < 200):
+                product_detail.append(f"  Summary: {p['short_description']}")
+            
+            # Add product-specific indicator values if available
+            if product_indicators and product_id in product_indicators:
+                product_indicator_values = []
+                for indicator_key, data in product_indicators[product_id].items():
+                    # Get indicator name from indicator_info if available
+                    indicator_name = indicator_key
+                    for ind in (indicator_info or []):
+                        if ind.get('key') == indicator_key:
+                            indicator_name = f"{ind.get('name')} ({indicator_key})"
+                            break
+                    
+                    # Format the module values
+                    module_values = []
+                    
+                    # Check if we have significance data
+                    has_significance = "significance" in data
+                    
+                    for module, value in data.get('modules', {}).items():
+                        if value is not None:
+                            # Format the value with appropriate precision
+                            if isinstance(value, float):
+                                if abs(value) < 0.001:
+                                    formatted_value = f"{value:.2e}"
+                                else:
+                                    formatted_value = f"{value:.3f}"
+                            else:
+                                formatted_value = str(value)
+                                
+                            # Add significance marker if available
+                            if has_significance and module in data.get('significance', {}):
+                                sig = data['significance'][module]
+                                if sig.get('is_high') and sig.get('z_score', 0) > 1.5:
+                                    formatted_value += " (high)"
+                                elif sig.get('is_low') and sig.get('z_score', 0) > 1.5:
+                                    formatted_value += " (low)"
+                                    
+                            module_values.append(f"{module}: {formatted_value}")
+                    
+                    if module_values:
+                        product_indicator_values.append(
+                            f"    {indicator_name} ({data.get('unit', 'unknown unit')}): " + 
+                            ", ".join(module_values)
+                        )
+                
+                if product_indicator_values:
+                    product_detail.append("  Notable Indicator Values:")
+                    product_detail.extend(product_indicator_values)
+            
+            product_details.append("\n".join(product_detail))
+        
+        product_context = f"Selected Products:\n{'-' * 30}\n" + "\n\n".join(product_details) + f"\n{'-' * 30}\n\n"
+    
+    # Format indicator info
+    indicator_context = ""
+    if indicator_info:
+        indicator_details = []
+        for i in indicator_info:
+            indicator_detail = [
+                f"Indicator {i['key']}: {i['name']}",
+                f"  Description: {i['short_description']}",
+            ]
+            # Only include long description if it's not too verbose
+            if i.get('long_description') and len(i.get('long_description')) < 300:
+                indicator_detail.append(f"  Detailed Information: {i['long_description']}")
+            indicator_details.append("\n".join(indicator_detail))
+        
+        indicator_context = f"Selected Indicators:\n{'-' * 30}\n" + "\n\n".join(indicator_details) + f"\n{'-' * 30}\n\n"
+    
+    # Common warning about not inventing data
+    no_invention_warning = """IMPORTANT: Only use numerical values explicitly provided above. Do not make up or infer any values not clearly stated in the context. If data is missing, acknowledge this limitation."""
+    
+    # Module integrity warning (for product-related categories)
+    module_integrity_warning = """
+CRITICAL INTEGRITY INSTRUCTION: Environmental indicator values are SPECIFIC to their life cycle modules.
+
+- Each value is ONLY valid for its specific module (A1, A1-A3, B1, C4, etc.)
+- You must NEVER present a module-specific value (e.g., A1-A3: 25.4) as representing the entire indicator
+- When citing values, ALWAYS include the exact module code: "GWP for module A1-A3: 25.4", NOT just "GWP: 25.4"
+- Different modules (A1 vs B2 vs C4) represent different life cycle stages and CANNOT be combined or compared directly
+- NEVER sum up values across different modules to create a "total" unless explicitly provided
+"""
+
+    # Module explanation (for product-related categories)
+    module_explanation = """
+REFERENCE - Life Cycle Modules:
+- A1-A3: Product stage (raw material supply, transport, manufacturing)
+- A4-A5: Construction stage (transport to site, installation)
+- B1-B7: Use stage (use, maintenance, repair, replacement, etc.)
+- C1-C4: End-of-life stage (demolition, transport, waste processing, disposal)
+- D: Benefits beyond system boundary (reuse, recovery, recycling potential)
+"""
+    
+    # Determine if this is a product-related category that needs the module warnings
+    product_related = category in ["comparison_question", "hybrid_theory_comparison", "product_followup"]
+    
+    # Product-related templates get the additional warnings
+    product_warnings = f"{module_integrity_warning}\n{module_explanation}" if product_related else ""
+    
+    # Prompt templates by category
+    prompt_templates = {
+        "theory_only": f"""You are an expert in building materials sustainability and life cycle assessment.
+
+Question: {question}
+
+Context:
+{base_context}
+
+{no_invention_warning}
+
+Answer the question clearly, providing definitions and explaining key terminology. Focus on the theoretical concepts requested in the question.
+
+Answer:""",
+
+        "comparison_question": f"""You are a sustainability analyst specializing in Environmental Product Declarations (EPDs).
+
+Question: {question}
+
+{product_context}
+{indicator_context}
+Context:
+{base_context}
+
+{no_invention_warning}
+
+{product_warnings}
+
+Compare the products objectively based on their indicator values. ONLY compare values for the SAME indicator AND SAME module between products (e.g., GWP module A1-A3 from Product 1 vs. GWP module A1-A3 from Product 2).
+
+If two products don't have values for the same modules, clearly state: "A direct comparison for [indicator] cannot be made because the products report values for different life cycle modules."
+
+Answer:""",
+
+        "hybrid_theory_comparison": f"""You are a sustainability educator specializing in building materials and life cycle assessment.
+
+Question: {question}
+
+{product_context}
+{indicator_context}
+Context:
+{base_context}
+
+{no_invention_warning}
+
+{product_warnings}
+
+First explain the relevant sustainability concepts, then analyze the differences between the products' indicator values. ONLY compare values for the SAME indicator AND SAME module between products.
+
+Help the user understand both what the differences are and why they matter from a sustainability perspective.
+
+Answer:""",
+
+        "new_product_query": f"""You are a building materials sustainability expert.
+
+Question: {question}
+
+Context:
+{base_context}
+
+{no_invention_warning}
+
+Share what you know about this type of product's environmental performance, sustainability characteristics, and common life cycle considerations based on the information in the context.
+
+Answer:""",
+
+        "indicator_explanation": f"""You are an environmental impact assessment specialist.
+
+Question: {question}
+
+{indicator_context}
+Context:
+{base_context}
+
+{no_invention_warning}
+
+Explain what this indicator measures, its units, what environmental impacts it relates to, and why it's relevant for building products. Use clear language while maintaining technical accuracy.
+
+Answer:""",
+
+        "recommendation_query": f"""You are a sustainable building materials consultant.
+
+Question: {question}
+
+Context:
+{base_context}
+
+{no_invention_warning}
+
+Recommend products or materials that perform well on relevant sustainability criteria based on the information provided. Explain the basis for your recommendations and mention any limitations in the available data.
+
+Answer:""",
+
+        "product_followup": f"""You are a product sustainability analyst specializing in building materials.
+
+Question: {question}
+
+{product_context}
+{indicator_context}
+Context:
+{base_context}
+
+{no_invention_warning}
+
+{product_warnings}
+
+Note: Only statistically significant indicators (those that are notably higher or lower than category averages) are shown for each product.
+
+When discussing the products:
+1. ONLY mention numerical values that are EXPLICITLY shown in the product data above
+2. ALWAYS specify which module a value belongs to when citing any indicator value
+3. NEVER refer to a single module's value as representing the entire indicator
+4. If asked about a specific aspect not covered in the data, state clearly that this information isn't provided
+
+Answer:"""
+    }
+    
+    # Use the appropriate template or fall back to a generic one
+    default_template = f"""You are a sustainability assistant specializing in building materials.
+
+Question: {question}
+
+{product_context if product_context else ""}
+{indicator_context if indicator_context else ""}
+Context:
+{base_context}
+
+{no_invention_warning}
+
+Answer:"""
+
+    return prompt_templates.get(category, default_template)
 
 @app.post("/askrag")
 async def ask_question(data: QuestionRequest):
+    """RAG-enhanced question answering endpoint with detailed logging"""
     question = data.question.strip()
     document_ids = data.documentIds or []
-    indicator_ids = []  # Initialize this since it's not in the model yet
-    if hasattr(data, 'indicatorIds'):  # Check if indicatorIds exists in the request
-        indicator_ids = data.indicatorIds or []
+    indicator_ids = data.indicatorIds or []
     llm_model = data.llmModel
     
-    logger.info(f"[DEBUG] Received request data: {data}")
+    # Create a query log object to track all steps
+    query_log = {
+        "question": question,
+        "document_ids": document_ids,
+        "indicator_ids": indicator_ids,
+        "llm_model": llm_model,
+        "theory_chunks": [],
+        "epd_chunks": [],
+        "sql_queries": {},
+        "classification": None,
+        "prompt": None,
+        "response": None,
+        "error": None
+    }
     
     # Input validation
     if not question:
+        error_msg = "Question cannot be empty."
+        query_log["error"] = error_msg
+        query_logger.log_query(query_log)
         return JSONResponse(
             status_code=400,
-            content={"answer": "Question cannot be empty."}
+            content={"answer": error_msg}
         )
     
     logger.info(f"[INFO] Question received: {question}")
@@ -161,147 +984,411 @@ async def ask_question(data: QuestionRequest):
 
     # Check if embedding model is available
     if embedding_model is None:
+        error_msg = "Embedding model is not available. Please try again later."
+        query_log["error"] = error_msg
+        query_logger.log_query(query_log)
         return JSONResponse(
             status_code=503,
-            content={"answer": "Embedding model is not available. Please try again later."}
+            content={"answer": error_msg}
         )
 
-    # Step 1: Create embedding
+    # Step 1: Classify the question
+    try:
+        category = classify_question(question)
+        query_log["classification"] = category
+        logger.info(f"[INFO] Classified question as: {category}")
+    except Exception as e:
+        error_msg = f"Failed to classify question: {str(e)}"
+        query_log["error"] = error_msg
+        query_logger.log_query(query_log)
+        logger.exception(error_msg)
+        return JSONResponse(
+            status_code=500,
+            content={"answer": "An error occurred processing your question."}
+        )
+
+    # Step 2: Create embedding
     try:
         embedding = embedding_model.encode(question).tolist()
     except Exception as e:
-        logger.exception("Error during embedding")
+        error_msg = f"Error during embedding: {str(e)}"
+        query_log["error"] = error_msg
+        query_logger.log_query(query_log)
+        logger.exception(error_msg)
         return JSONResponse(
             status_code=500,
             content={"answer": f"Failed to process your question: {str(e)}"}
         )
 
-    # Step 2: Retrieve relevant context from DB
+    # Step 3: Retrieve relevant context based on question category
+    chunks = []
+    product_info = None
+    indicator_info = None
+    product_indicators = None
+    
     try:
-        conn = get_pg_connection()
-        cur = conn.cursor()
-        
-        try:
-            # Different query strategies based on what filters are provided
-            if document_ids and indicator_ids:
-                # Filter by both product IDs and indicator IDs
-                # Since we don't have a direct way to filter by indicators in the current schema,
-                # we'll use a simplified approach:
-                # 1. Use product IDs to filter chunks
-                # 2. Include indicator info in the prompt for the LLM
+        # Retrieve different data based on question category
+        if category == "theory_only":
+            # Only retrieve theory chunks
+            theory_sql = """
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'theory'
+                ORDER BY embedding <-> $1::vector
+                LIMIT $2;
+            """
+            query_log["sql_queries"]["theory"] = theory_sql
+            
+            theory_chunks = get_theory_chunks(embedding, limit=5)
+            query_log["theory_chunks"] = theory_chunks
+            chunks.extend(theory_chunks)
+            logger.info(f"Retrieved {len(theory_chunks)} theory chunks for theory_only")
+            
+        elif category == "comparison_question":
+            # Retrieve product data and indicator info for comparisons
+            if document_ids:
                 product_placeholders = ', '.join(['%s'] * len(document_ids))
-                cur.execute(f"""
+                epd_sql = f"""
                     SELECT chunk
                     FROM embeddings
                     WHERE process_id IN ({product_placeholders})
+                    AND metadata->>'source' = 'epd'
                     ORDER BY embedding <-> %s::vector
-                    LIMIT 5;
-                """, (*document_ids, embedding))
-            
-            elif document_ids:
-                # If only product IDs are provided, filter by products only
-                product_placeholders = ', '.join(['%s'] * len(document_ids))
-                cur.execute(f"""
-                    SELECT chunk
-                    FROM embeddings
-                    WHERE process_id IN ({product_placeholders})
-                    ORDER BY embedding <-> %s::vector
-                    LIMIT 5;
-                """, (*document_ids, embedding))
-            
-            else:
-                # If no product filters provided, return the most semantically relevant chunks
-                cur.execute("""
-                    SELECT chunk
-                    FROM embeddings
-                    ORDER BY embedding <-> %s::vector
-                    LIMIT 5;
-                """, (embedding,))
+                    LIMIT %s;
+                """
+                query_log["sql_queries"]["epd"] = epd_sql
                 
-            rows = cur.fetchall()
-
-            # Write chunks to a file one by one (for debugging)
-            working_directory = os.getcwd()
-            file_path = os.path.join(working_directory, "fetched_chunks.txt")
-
-            with open(file_path, "w") as file:
-                for row in rows:
-                    file.write(f"{row[0]}\n\n")
-                    logger.info(f"Written chunk to file: {row[0]}")
-
-            logger.info(f"Chunks saved to: {file_path}")
-
-        except Exception as db_error:
-            logger.exception("Database query error")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Database query error: {str(db_error)}"
-            )
-        finally:
-            cur.close()
-            conn.close()
-
-        if not rows:
+                epd_chunks = get_epd_chunks(embedding, document_ids, limit=5)
+                query_log["epd_chunks"] = epd_chunks
+                chunks.extend(epd_chunks)
+                logger.info(f"Retrieved {len(epd_chunks)} EPD chunks for comparison_question")
+                
+                # Get enhanced product info
+                product_info = get_product_info(document_ids)
+                query_log["product_info"] = product_info
+                
+                # Get product-specific indicator values
+                if indicator_ids:
+                    product_indicators = get_product_indicators(document_ids, indicator_ids)
+                    query_log["product_indicators"] = product_indicators
+            
+            if indicator_ids:
+                indicator_info = get_indicator_info(indicator_ids)
+                query_log["indicator_info"] = indicator_info
+            
+        elif category == "hybrid_theory_comparison":
+            # Get both theoretical and product data
+            theory_sql = """
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'theory'
+                ORDER BY embedding <-> $1::vector
+                LIMIT $2;
+            """
+            query_log["sql_queries"]["theory"] = theory_sql
+            
+            theory_chunks = get_theory_chunks(embedding, limit=3)
+            query_log["theory_chunks"] = theory_chunks
+            chunks.extend(theory_chunks)
+            logger.info(f"Retrieved {len(theory_chunks)} theory chunks for hybrid_theory_comparison")
+            
+            if document_ids:
+                product_placeholders = ', '.join(['%s'] * len(document_ids))
+                epd_sql = f"""
+                    SELECT chunk
+                    FROM embeddings
+                    WHERE process_id IN ({product_placeholders})
+                    AND metadata->>'source' = 'epd'
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT %s;
+                """
+                query_log["sql_queries"]["epd"] = epd_sql
+                
+                epd_chunks = get_epd_chunks(embedding, document_ids, limit=3)
+                query_log["epd_chunks"] = epd_chunks
+                chunks.extend(epd_chunks)
+                logger.info(f"Retrieved {len(epd_chunks)} EPD chunks for hybrid_theory_comparison")
+                
+                # Get enhanced product info
+                product_info = get_product_info(document_ids)
+                query_log["product_info"] = product_info
+                
+                # Get product-specific indicator values
+                if indicator_ids:
+                    product_indicators = get_product_indicators(document_ids, indicator_ids)
+                    query_log["product_indicators"] = product_indicators
+                
+            if indicator_ids:
+                indicator_info = get_indicator_info(indicator_ids)
+                query_log["indicator_info"] = indicator_info
+            
+        elif category == "new_product_query":
+            # Get theory and search for similar products
+            theory_sql = """
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'theory'
+                ORDER BY embedding <-> $1::vector
+                LIMIT $2;
+            """
+            query_log["sql_queries"]["theory"] = theory_sql
+            
+            theory_chunks = get_theory_chunks(embedding, limit=3)
+            query_log["theory_chunks"] = theory_chunks
+            chunks.extend(theory_chunks)
+            logger.info(f"Retrieved {len(theory_chunks)} theory chunks for new_product_query")
+            
+            # Extract product terms from question for search
+            words = question.lower().split()
+            common_building_terms = ["insulation", "brick", "concrete", "wood", "timber", "glass", 
+                                    "steel", "aluminum", "roof", "tile", "panel", "facade", "window"]
+            search_terms = [word for word in words if word in common_building_terms]
+            
+            if search_terms:
+                query_log["search_terms"] = search_terms
+                for term in search_terms[:2]:  # Limit to 2 search terms
+                    similar_product_chunks = search_epd_by_term(term, limit=2)
+                    query_log["epd_chunks_search"] = similar_product_chunks
+                    chunks.extend(similar_product_chunks)
+                    logger.info(f"Retrieved {len(similar_product_chunks)} product chunks for search term '{term}'")
+            
+        elif category == "indicator_explanation":
+            # Get theory chunks about indicators
+            theory_sql = """
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'theory'
+                ORDER BY embedding <-> $1::vector
+                LIMIT $2;
+            """
+            query_log["sql_queries"]["theory"] = theory_sql
+            
+            theory_chunks = get_theory_chunks(embedding, limit=5)
+            query_log["theory_chunks"] = theory_chunks
+            chunks.extend(theory_chunks)
+            logger.info(f"Retrieved {len(theory_chunks)} theory chunks for indicator_explanation")
+            
+            # If specific indicators are selected, get their info
+            if indicator_ids:
+                indicator_info = get_indicator_info(indicator_ids)
+                query_log["indicator_info"] = indicator_info
+            
+        elif category == "recommendation_query":
+            # Get theory and wide search in product database
+            theory_sql = """
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'theory'
+                ORDER BY embedding <-> $1::vector
+                LIMIT $2;
+            """
+            query_log["sql_queries"]["theory"] = theory_sql
+            
+            theory_chunks = get_theory_chunks(embedding, limit=2)
+            query_log["theory_chunks"] = theory_chunks
+            chunks.extend(theory_chunks)
+            logger.info(f"Retrieved {len(theory_chunks)} theory chunks for recommendation_query")
+            
+            # Get diverse product examples from database
+            epd_sql = """
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'epd'
+                ORDER BY embedding <-> $1::vector
+                LIMIT $2;
+            """
+            query_log["sql_queries"]["epd"] = epd_sql
+            
+            diverse_chunks = get_epd_chunks(embedding, limit=5)
+            query_log["epd_chunks"] = diverse_chunks
+            chunks.extend(diverse_chunks)
+            logger.info(f"Retrieved {len(diverse_chunks)} diverse EPD chunks for recommendation")
+            
+        elif category == "product_followup":
+            # Get information on selected products
+            if document_ids:
+                product_placeholders = ', '.join(['%s'] * len(document_ids))
+                epd_sql = f"""
+                    SELECT chunk
+                    FROM embeddings
+                    WHERE process_id IN ({product_placeholders})
+                    AND metadata->>'source' = 'epd'
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT %s;
+                """
+                query_log["sql_queries"]["epd"] = epd_sql
+                
+                epd_chunks = get_epd_chunks(embedding, document_ids, limit=5)
+                query_log["epd_chunks"] = epd_chunks
+                chunks.extend(epd_chunks)
+                logger.info(f"Retrieved {len(epd_chunks)} EPD chunks for product_followup")
+                
+                # Get enhanced product info
+                product_info = get_product_info(document_ids)
+                query_log["product_info"] = product_info
+                
+                # Get statistically significant indicators (outliers compared to category averages)
+                product_indicators = get_statistically_important_indicators(document_ids, max_indicators=8)
+                query_log["product_indicators"] = product_indicators
+                
+                # Get indicator counts for logging
+                indicator_counts = {product_id: len(indicators) for product_id, indicators in product_indicators.items()}
+                logger.info(f"Retrieved statistical outlier indicators for {len(product_indicators)} products")
+                logger.info(f"Indicator counts per product: {indicator_counts}")
+            
+            # Still get specific indicator info if selected
+            if indicator_ids:
+                indicator_info = get_indicator_info(indicator_ids)
+                query_log["indicator_info"] = indicator_info
+                
+            # Add theory if needed
+            if len(chunks) < 3:
+                theory_chunks = get_theory_chunks(embedding, limit=2)
+                query_log["theory_chunks"] = theory_chunks
+                chunks.extend(theory_chunks)
+                logger.info(f"Added {len(theory_chunks)} theory chunks to supplement product_followup")
+        
+        else:  # Unknown category
+            # Default approach: get both theory and product data if available
+            theory_sql = """
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'theory'
+                ORDER BY embedding <-> $1::vector
+                LIMIT $2;
+            """
+            query_log["sql_queries"]["theory"] = theory_sql
+            
+            theory_chunks = get_theory_chunks(embedding, limit=3)
+            query_log["theory_chunks"] = theory_chunks
+            chunks.extend(theory_chunks)
+            logger.info(f"Retrieved {len(theory_chunks)} theory chunks for unknown category")
+            
+            if document_ids:
+                product_placeholders = ', '.join(['%s'] * len(document_ids))
+                epd_sql = f"""
+                    SELECT chunk
+                    FROM embeddings
+                    WHERE process_id IN ({product_placeholders})
+                    AND metadata->>'source' = 'epd'
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT %s;
+                """
+                query_log["sql_queries"]["epd"] = epd_sql
+                
+                epd_chunks = get_epd_chunks(embedding, document_ids, limit=3)
+                query_log["epd_chunks"] = epd_chunks
+                chunks.extend(epd_chunks)
+                logger.info(f"Retrieved {len(epd_chunks)} EPD chunks for unknown category")
+                
+                # Get enhanced product info
+                product_info = get_product_info(document_ids)
+                query_log["product_info"] = product_info
+                
+                # Get product-specific indicator values
+                if indicator_ids:
+                    product_indicators = get_product_indicators(document_ids, indicator_ids)
+                    query_log["product_indicators"] = product_indicators
+                
+            if indicator_ids:
+                indicator_info = get_indicator_info(indicator_ids)
+                query_log["indicator_info"] = indicator_info
+        
+        # If we didn't get any chunks, try a broader approach
+        if not chunks:
+            logger.warning("No chunks retrieved with specialized approach, falling back to general retrieval")
+            
+            theory_sql = """
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'theory'
+                ORDER BY embedding <-> $1::vector
+                LIMIT $2;
+            """
+            query_log["sql_queries"]["fallback_theory"] = theory_sql
+            
+            theory_chunks = get_theory_chunks(embedding, limit=2)
+            query_log["fallback_theory_chunks"] = theory_chunks
+            chunks.extend(theory_chunks)
+            
+            epd_sql = """
+                SELECT chunk
+                FROM embeddings
+                WHERE metadata->>'source' = 'epd'
+                ORDER BY embedding <-> $1::vector
+                LIMIT $2;
+            """
+            query_log["sql_queries"]["fallback_epd"] = epd_sql
+            
+            general_chunks = get_epd_chunks(embedding, limit=3)
+            query_log["fallback_epd_chunks"] = general_chunks
+            chunks.extend(general_chunks)
+        
+        # Debug: Write chunks to file
+        working_directory = os.getcwd()
+        file_path = os.path.join(working_directory, "fetched_chunks.txt")
+        with open(file_path, "w") as file:
+            for chunk in chunks:
+                file.write(f"{chunk}\n\n")
+            
+        logger.info(f"Chunks saved to: {file_path}")
+        
+        if not chunks:
+            no_chunks_msg = "I couldn't find relevant information to answer your question. Try a different question or select different products."
+            query_log["error"] = "No relevant chunks found"
+            query_logger.log_query(query_log)
             logger.warning("No relevant chunks found.")
             return JSONResponse(
-                content={"answer": "I couldn't find relevant information to answer your question. Try a different question or select different products."}
+                content={"answer": no_chunks_msg}
             )
 
-        logger.info(f"Retrieved {len(rows)} chunks")
-
-    except HTTPException:
-        # Re-raise HTTP exceptions
-        raise
+        logger.info(f"Retrieved a total of {len(chunks)} chunks")
+    
     except Exception as e:
-        logger.exception("Unexpected database error")
+        error_msg = f"An error occurred while retrieving context: {str(e)}"
+        query_log["error"] = error_msg
+        query_logger.log_query(query_log)
+        logger.exception(error_msg)
         return JSONResponse(
             status_code=500,
-            content={"answer": f"An unexpected error occurred while retrieving data: {str(e)}"}
+            content={"answer": error_msg}
         )
 
-    # Step 3: Construct prompt with product and indicator context
-    chunks_context = "\n\n".join([row[0] for row in rows])
+    # Step 4: Build specialized prompt based on question category
+    chunks_context = "\n\n".join(chunks)
+    prompt = build_specialized_prompt(category, question, chunks_context, product_info, indicator_info, product_indicators)
+    query_log["prompt"] = prompt
     
-    # Add product and indicator context to the prompt
-    product_context = ""
-    if document_ids:
-        product_context = f"The question relates to these product IDs: {', '.join(document_ids)}.\n"
-    
-    indicator_context = ""
-    if indicator_ids:
-        indicator_context = f"The question focuses on these environmental indicators: {', '.join(indicator_ids)}.\n"
-    
-    prompt = f"""You are a helpful assistant that only uses the provided context to answer questions.
-
-Question: {question}
-
-{product_context}{indicator_context}
-Context:
-{chunks_context}
-
-Answer:"""
-
     logger.info("Prompt constructed. Sending to inference...")
 
-    # Step 4: Send prompt to inference service
+    # Step 5: Send prompt to LLM
     try:
-        logger.info(f"Calling LLM with model key: {llm_model}")
-        logger.info(f"Sending prompt: {prompt}")
         answer = query_llm(prompt, model_name=llm_model)
+        query_log["response"] = answer
         
         if not answer or not isinstance(answer, str):
-            logger.warning(f"LLM returned invalid answer: {answer}")
+            error_msg = "LLM returned invalid answer"
+            query_log["error"] = error_msg
+            query_logger.log_query(query_log)
+            logger.warning(f"{error_msg}: {answer}")
             return JSONResponse(
                 content={"answer": "I'm sorry, I couldn't generate a proper response. Please try again."}
             )
             
+        # Log the successful query
+        log_path = query_logger.log_query(query_log)
+        logger.info(f"Query log saved to {log_path}")
+        
         logger.info("LLM returned result.")
         return JSONResponse(content={"answer": answer})
     except Exception as e:
+        error_msg = f"I'm sorry, I'm having trouble generating a response right now. Please try again later. (Error: {str(e)})"
+        query_log["error"] = str(e)
+        query_logger.log_query(query_log)
         logger.exception("Inference failed")
         return JSONResponse(
             status_code=503,
-            content={"answer": f"I'm sorry, I'm having trouble generating a response right now. Please try again later. (Error: {str(e)})"}
+            content={"answer": error_msg}
         )
     
 @app.post("/search")
@@ -590,7 +1677,124 @@ async def get_all_indicators():
             content={"error": f"Unexpected error: {str(e)}"}
         )
 
-
+def get_all_product_indicators(document_ids):
+    """
+    Retrieves ALL indicator values for specified products, not limited to selected indicators.
+    
+    Args:
+        document_ids: List of product IDs
+        
+    Returns:
+        Dictionary mapping product IDs to all their indicator values
+    """
+    if not document_ids:
+        return {}
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        try:
+            product_indicators = {}
+            
+            # Set up placeholders for SQL query
+            product_placeholders = ', '.join(['%s'] * len(document_ids))
+            
+            # Get LCIA results for all indicators
+            cur.execute(f"""
+                SELECT l.process_id, l.indicator_key, l.unit, lm.module, lm.amount
+                FROM lcia_results l
+                JOIN lcia_moduleamounts lm ON l.lcia_id = lm.lcia_id
+                WHERE l.process_id IN ({product_placeholders})
+            """, tuple(document_ids))
+            
+            lcia_rows = cur.fetchall()
+            
+            # Get exchange results for all indicators
+            cur.execute(f"""
+                SELECT e.process_id, e.indicator_key, e.unit, em.module, em.amount
+                FROM exchanges e
+                JOIN exchange_moduleamounts em ON e.exchange_id = em.exchange_id
+                WHERE e.process_id IN ({product_placeholders})
+            """, tuple(document_ids))
+            
+            exchange_rows = cur.fetchall()
+            
+            # Collect all unique indicator keys to fetch their metadata later
+            all_indicator_keys = set()
+            
+            # Process LCIA results
+            for row in lcia_rows:
+                process_id, indicator_key, unit, module, amount = row
+                process_id = str(process_id)
+                all_indicator_keys.add(indicator_key)
+                
+                if process_id not in product_indicators:
+                    product_indicators[process_id] = {}
+                    
+                if indicator_key not in product_indicators[process_id]:
+                    product_indicators[process_id][indicator_key] = {
+                        "unit": unit,
+                        "modules": {}
+                    }
+                
+                if module:
+                    product_indicators[process_id][indicator_key]["modules"][module] = amount
+            
+            # Process exchange results
+            for row in exchange_rows:
+                process_id, indicator_key, unit, module, amount = row
+                process_id = str(process_id)
+                all_indicator_keys.add(indicator_key)
+                
+                if process_id not in product_indicators:
+                    product_indicators[process_id] = {}
+                    
+                if indicator_key not in product_indicators[process_id]:
+                    product_indicators[process_id][indicator_key] = {
+                        "unit": unit,
+                        "modules": {}
+                    }
+                
+                if module:
+                    product_indicators[process_id][indicator_key]["modules"][module] = amount
+            
+            # Fetch metadata for all indicators 
+            if all_indicator_keys:
+                indicator_placeholders = ', '.join(['%s'] * len(all_indicator_keys))
+                cur.execute(f"""
+                    SELECT 
+                        indicator_key, 
+                        name, 
+                        short_description
+                    FROM indicators
+                    WHERE indicator_key IN ({indicator_placeholders})
+                """, tuple(all_indicator_keys))
+                
+                indicator_metadata = {}
+                for row in cur.fetchall():
+                    indicator_key, name, short_description = row
+                    indicator_metadata[indicator_key] = {
+                        "name": name,
+                        "short_description": short_description
+                    }
+                
+                # Add metadata to the product indicators
+                for process_id in product_indicators:
+                    for indicator_key in product_indicators[process_id]:
+                        if indicator_key in indicator_metadata:
+                            product_indicators[process_id][indicator_key]["name"] = indicator_metadata[indicator_key]["name"]
+                            product_indicators[process_id][indicator_key]["description"] = indicator_metadata[indicator_key]["short_description"]
+            
+            return product_indicators
+            
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.exception("Error retrieving all product indicator values")
+        return {}
+    
 @app.post("/compare")
 async def compare_products(data: dict):
     """

@@ -31,11 +31,12 @@ const useQuestionAnswer = (
 
     try {
       // Extract product IDs from selectedItems
-      const productIds = selectedItems.map((item) => item.id);
+      const productIds = selectedItems;
+      console.log("Sending question with products:", productIds);
 
       // Extract indicator names from selectedIndicators
       const indicatorIds = selectedIndicators
-        .map((indicator) => indicator?.name)
+        .map((indicator) => indicator?.key)
         .filter(Boolean);
 
       // Use askRagQuestion instead of askQuestion
