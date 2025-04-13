@@ -198,37 +198,35 @@ A:
         logger.exception("Classification failed")
         return "unknown"
 
-def generate_comparison_prompt(document_ids, selected_indicators, max_extra=3):
+def generate_comparison_prompt(document_ids, selected_indicators, max_extra=0, statistics=None):
     """
-    Generate a comparison prompt using selected indicators and a few statistically meaningful extras.
+    Generate a comparison prompt using selected indicators and optional statistical context.
     """
     # Get product info to use names instead of IDs
     product_info = get_product_info(document_ids)
     product_names = {str(product['id']): product['name'] for product in product_info}
 
-    # Get product indicators
-    product_indicators = get_combined_indicators(document_ids, selected_indicators, max_extra=max_extra)
-    
+    # Get product indicators - only user-selected indicators
+    product_indicators = get_product_indicators(document_ids, selected_indicators)
+
     product_blocks = []
     for pid in document_ids:
         indicators = product_indicators.get(pid, {})
         if not indicators:
             continue
-        
-        # Use product name instead of ID
+
         product_name = product_names.get(pid, f"Product {pid}")
         lines = [f"Product: {product_name}", "Environmental Indicators:"]
-        
-        for key, data in indicators.items():
-            for module, value in data.get("modules", {}).items():
-                lines.append(f"- {key} ({data['unit']}): {module}: {value}")
-        
+
+        for key in selected_indicators:
+            if key in indicators:
+                for module, value in indicators[key].get("modules", {}).items():
+                    lines.append(f"- {key} ({indicators[key]['unit']}): {module}: {value}")
+
         product_blocks.append("\n".join(lines))
 
     # Collect all unique indicator keys
-    indicator_keys = set()
-    for indicators in product_indicators.values():
-        indicator_keys.update(indicators.keys())
+    indicator_keys = set(selected_indicators)
 
     # Fetch metadata using get_indicator_info
     indicator_descriptions_list = get_indicator_info(list(indicator_keys))
@@ -244,6 +242,21 @@ def generate_comparison_prompt(document_ids, selected_indicators, max_extra=3):
 
     indicator_info_block = "\n".join(indicator_info_lines) if indicator_info_lines else "(No additional indicator information available.)"
 
+    # Optional: Add indicator statistics block
+    statistics_block = ""
+    if statistics:
+        stats_lines = ["Indicator Category Statistics (Same Category):"]
+        for key in sorted(statistics):
+            for module, values in statistics[key].items():
+                mean = values.get("mean")
+                min_val = values.get("min")
+                max_val = values.get("max")
+                unit = values.get("unit", "")
+                stats_lines.append(
+                    f"- {key} ({unit}) in {module}: mean = {mean}, min = {min_val}, max = {max_val}"
+                )
+        statistics_block = "\n" + "\n".join(stats_lines)
+
     module_reference = """
 Life Cycle Modules:
 - A1-A3: Product stage (raw material extraction, transport, manufacturing)
@@ -256,14 +269,16 @@ Life Cycle Modules:
     prompt = f"""
 You are a sustainability analyst specializing in Environmental Product Declarations (EPDs) for building materials.
 
-Your task is to compare the following products based on their environmental indicator values.
+Your task is to compare the following products based on their environmental indicator values, with a focus on the user-selected indicators.
 
 CRITICAL COMPARISON RULES:
-1. Compare the values accross ALL life cycle modules.
+1. Compare the the indicators accross ALL life cycle modules.
 2. Compare ONLY values for the SAME indicator AND the SAME life cycle module.
 3. If a value is missing for one product, do NOT compare that indicator/module.
-4. Always specify the module when mentioning a value (e.g., "Product A has GWP-fossil in A1-A3: 150 kg CO₂-eq").
-5. Module-specific values cannot be generalized across the entire lifecycle.
+4. Always specify the module when mentioning a value.
+5. Compare how each indicator's values fit within the statistical range (mean, min, max) for its category and module.
+
+USER-SELECTED INDICATORS are the primary focus of your comparison.
 
 Products to compare:
 ----------------------------------------
@@ -273,9 +288,11 @@ Products to compare:
 Indicator information:
 {indicator_info_block}
 
+{statistics_block}
+
 {module_reference.strip()}
 
-Begin your analysis by identifying comparable indicators and modules:
+Begin your analysis:
 """
     return prompt
 
@@ -1146,12 +1163,12 @@ async def compare_analysis(data: CompareAnalysisRequest):
     product_ids = data.productIds
     indicator_ids = data.indicatorIds
     llm_model = data.llmModel
-    
+
     # Log the request
     logger.info(f"[INFO] Compare analysis request for products: {product_ids}")
     logger.info(f"[INFO] Compare analysis indicators: {indicator_ids}")
     logger.info(f"[INFO] Selected LLM: {llm_model}")
-    
+
     # Create a log object
     analysis_log = {
         "product_ids": product_ids,
@@ -1161,7 +1178,7 @@ async def compare_analysis(data: CompareAnalysisRequest):
         "response": None,
         "error": None
     }
-    
+
     # Input validation
     if not product_ids or len(product_ids) < 1:
         error_msg = "At least one product must be selected for analysis."
@@ -1171,7 +1188,7 @@ async def compare_analysis(data: CompareAnalysisRequest):
             status_code=400,
             content={"answer": error_msg}
         )
-        
+
     if not indicator_ids:
         error_msg = "At least one indicator must be selected for analysis."
         analysis_log["error"] = error_msg
@@ -1180,9 +1197,9 @@ async def compare_analysis(data: CompareAnalysisRequest):
             status_code=400,
             content={"answer": error_msg}
         )
-    
+
     try:
-        # Get product information
+        # Get product info
         product_info = get_product_info(product_ids)
         if not product_info:
             error_msg = "Could not retrieve product information."
@@ -1192,27 +1209,86 @@ async def compare_analysis(data: CompareAnalysisRequest):
                 status_code=404,
                 content={"answer": error_msg}
             )
-        
+
         # Get indicator information
         indicator_info = get_indicator_info(indicator_ids)
-        
-        # Get product-specific indicator values (using your statistical filtering)
-        product_indicators = get_statistically_important_indicators(product_ids, max_indicators=2)
-        
-        # Generate a focused comparison prompt
-        prompt = generate_comparison_prompt(product_ids, indicator_ids, max_extra=2)
+
+        # Get indicator values (only for selected indicators)
+        product_indicators = get_product_indicators(product_ids, indicator_ids)
+
+        # Gather all used modules
+        module_names = sorted({
+            module
+            for indicators in product_indicators.values()
+            for ind in indicators.values()
+            for module in ind.get("modules", {})
+        })
+
+        # Determine category from first product
+        cat1 = product_info[0]["category_level_1"]
+        cat2 = product_info[0]["category_level_2"]
+        cat3 = product_info[0]["category_level_3"]
+
+        # Fetch statistics for selected indicators + modules + category
+        stats_rows = []
+        if module_names:
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                try:
+                    stats_indicator_placeholders = ', '.join(['%s'] * len(indicator_ids))
+                    stats_module_placeholders = ', '.join(['%s'] * len(module_names))
+
+                    cur.execute(f"""
+                        SELECT indicator_key, module, mean, min, max, unit
+                        FROM indicator_statistics
+                        WHERE indicator_key IN ({stats_indicator_placeholders})
+                        AND module IN ({stats_module_placeholders})
+                        AND category_level_1 = %s
+                        AND category_level_2 = %s
+                        AND category_level_3 = %s
+                    """, tuple(indicator_ids) + tuple(module_names) + (cat1, cat2, cat3))
+
+                    stats_rows = cur.fetchall()
+                    logger.info(f"Fetched {len(stats_rows)} statistics rows")
+                finally:
+                    cur.close()
+                    conn.close()
+            except Exception as e:
+                logger.exception("Failed to fetch indicator statistics")
+
+        # Convert stats to a dict for use in prompt
+        indicator_statistics = {}
+        for row in stats_rows:
+            key, module, mean, min_val, max_val, unit = row
+            if key not in indicator_statistics:
+                indicator_statistics[key] = {}
+            indicator_statistics[key][module] = {
+                "mean": mean,
+                "min": min_val,
+                "max": max_val,
+                "unit": unit
+            }
+
+        # Generate prompt (with selected indicators only, no statistical extras)
+        prompt = generate_comparison_prompt(
+            document_ids=product_ids,
+            selected_indicators=indicator_ids,
+            max_extra=0,
+            statistics=indicator_statistics
+        )
         analysis_log["prompt"] = prompt
-        
+
         # Call the LLM
         answer = query_llm(prompt, model_name=llm_model)
         analysis_log["response"] = answer
-        
+
         # Log the successful query
         log_path = query_logger.log_query(analysis_log)
         logger.info(f"Comparison analysis log saved to {log_path}")
-        
+
         return JSONResponse(content={"answer": answer})
-        
+
     except Exception as e:
         error_msg = f"Error during comparison analysis: {str(e)}"
         analysis_log["error"] = error_msg
@@ -1222,6 +1298,7 @@ async def compare_analysis(data: CompareAnalysisRequest):
             status_code=500,
             content={"answer": "An error occurred during comparison analysis."}
         )
+
     
 @app.post("/askrag")
 async def ask_question(data: QuestionRequest):
