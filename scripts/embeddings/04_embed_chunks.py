@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 # === CONFIG ======================
 load_dotenv()
 #embedding_transformer = "BAAI/bge-large-en-v1.5"
-table = "embeddings_large"
-embedding_transformer = "BAAI/bge-large-en-v1.5"
+table = "embeddings"
+embedding_transformer = "BAAI/bge-small-en-v1.5"
 input_file = "data/chunks/theory_chunks_tagged.json"
 embedding_database = "pgvector"
 recreate_table = False
@@ -51,8 +51,8 @@ def create_table(conn, dim):
 def insert_embedding(conn, chunk_id, process_id, embedding, chunk_text, metadata):
     with conn.cursor() as cur:
         cur.execute(
-            """
-            INSERT INTO embeddings_small (chunk_id, process_id, embedding, chunk, metadata)
+            f"""
+            INSERT INTO {table} (chunk_id, process_id, embedding, chunk, metadata)
             VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (chunk_id) DO NOTHING
             """,

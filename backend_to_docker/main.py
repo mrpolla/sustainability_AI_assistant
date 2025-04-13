@@ -143,6 +143,8 @@ async def ask_question(data: QuestionRequest):
         indicator_ids = data.indicatorIds or []
     llm_model = data.llmModel
     
+    logger.info(f"[DEBUG] Received request data: {data}")
+    
     # Input validation
     if not question:
         return JSONResponse(
@@ -190,7 +192,7 @@ async def ask_question(data: QuestionRequest):
                 product_placeholders = ', '.join(['%s'] * len(document_ids))
                 cur.execute(f"""
                     SELECT chunk
-                    FROM embeddings_small
+                    FROM embeddings
                     WHERE process_id IN ({product_placeholders})
                     ORDER BY embedding <-> %s::vector
                     LIMIT 5;
@@ -201,7 +203,7 @@ async def ask_question(data: QuestionRequest):
                 product_placeholders = ', '.join(['%s'] * len(document_ids))
                 cur.execute(f"""
                     SELECT chunk
-                    FROM embeddings_small
+                    FROM embeddings
                     WHERE process_id IN ({product_placeholders})
                     ORDER BY embedding <-> %s::vector
                     LIMIT 5;
@@ -211,7 +213,7 @@ async def ask_question(data: QuestionRequest):
                 # If no product filters provided, return the most semantically relevant chunks
                 cur.execute("""
                     SELECT chunk
-                    FROM embeddings_small
+                    FROM embeddings
                     ORDER BY embedding <-> %s::vector
                     LIMIT 5;
                 """, (embedding,))

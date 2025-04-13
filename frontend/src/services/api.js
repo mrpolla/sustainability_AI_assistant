@@ -301,21 +301,33 @@ export const askRagQuestion = async (
   try {
     validateParams({ question }, ["question"]);
 
-    if (!Array.isArray(selectedDocuments)) {
-      selectedDocuments = [];
-    }
-
-    if (!Array.isArray(selectedIndicators)) {
-      selectedIndicators = [];
-    }
+    // Ensure arrays are properly formatted
+    const documentIds = Array.isArray(selectedDocuments)
+      ? selectedDocuments.filter(
+          (id) => id !== null && id !== undefined && id !== ""
+        )
+      : [];
+    const indicatorIds = Array.isArray(selectedIndicators)
+      ? selectedIndicators
+      : [];
 
     console.log(`Asking RAG question with model ${llmModel}`);
+    console.log(
+      `Selected documents: ${
+        documentIds.length > 0 ? documentIds.join(", ") : "none"
+      }`
+    );
+    console.log(
+      `Selected indicators: ${
+        indicatorIds.length > 0 ? indicatorIds.join(", ") : "none"
+      }`
+    );
 
     const payload = {
       question,
-      documentIds: selectedDocuments,
-      indicatorIds: selectedIndicators,
-      llmModel: llmModel,
+      documentIds: documentIds,
+      indicatorIds: indicatorIds,
+      llmModel: llmModel || "mistral",
     };
 
     console.log(
