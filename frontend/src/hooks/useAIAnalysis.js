@@ -1,8 +1,9 @@
 import { useState, useCallback } from "react";
-import { askQuestion } from "../services/api";
+import { analyzeComparison } from "../services/api";
 
 /**
  * Hook for managing AI analysis of comparison results
+ * Updated to use a dedicated comparison endpoint
  */
 const useAIAnalysis = (
   comparisonData,
@@ -22,91 +23,62 @@ const useAIAnalysis = (
     if (
       !comparisonData ||
       !comparisonData.products ||
-      !comparisonData.indicators
+      !comparisonData.indicators ||
+      comparisonData.products.length === 0 ||
+      comparisonData.indicators.length === 0
     ) {
+      setAiAnalysis({
+        loading: false,
+        result: "",
+        error:
+          "No comparison data available. Please select products and indicators first.",
+      });
       return;
     }
 
     setAiAnalysis({ loading: true, result: "", error: null });
 
     try {
-      // Get product information
-      const productNames = comparisonData.products
-        .map((p) => p.name)
-        .join(", ");
-      const productCount = comparisonData.products.length;
+      // Extract product IDs
+      const productIds = comparisonData.products.map((product) => product.id);
 
-      // Get indicator information
-      const indicatorNames = comparisonData.indicators
-        .map((ind) => ind.name)
-        .join(", ");
-      const indicatorCount = comparisonData.indicators.length;
-
-      // Create a detailed summary of the comparison data
-      let comparisonDetails = "";
-
-      comparisonData.indicators.forEach((indicator) => {
-        comparisonDetails += `\nIndicator: ${indicator.key} (${
-          indicator.unit || "no unit"
-        })\n`;
-
-        // Process each product's data for this indicator
-        indicator.productData.forEach((product) => {
-          const productInfo = comparisonData.products.find(
-            (p) => p.id === product.productId
-          );
-          if (productInfo) {
-            comparisonDetails += `- ${productInfo.name}:\n`;
-
-            // Process module data
-            const modules = product.modules || {};
-            Object.entries(modules).forEach(([moduleName, value]) => {
-              comparisonDetails += `  - ${moduleName}: ${value}\n`;
-            });
-          }
-        });
-      });
-
-      // Create the fully formulated prompt
-      const fullyFormulatedQuestion = `
-You are an expert in environmental product declarations (EPD) and life cycle assessment (LCA).
-Please analyze the following comparison results between ${productCount} products across ${indicatorCount} environmental impact indicators.
-
-Products being compared: ${productNames}
-Indicators being analyzed: ${indicatorNames}
-
-Detailed comparison data:
-${comparisonDetails}
-
-Please provide an expert analysis of these results. Include:
-1. A comparison of the overall environmental performance of these products
-2. Identification of which product performs best for each indicator
-3. Explanation of what each indicator means in practical terms
-4. Recommendations based on this comparison
-5. Any notable patterns or insights from the module-level data
-
-Keep your analysis clear and helpful for someone who may not be an expert in LCA.
-`.trim();
-
-      console.log(
-        "Sending fully formulated question to LLM:",
-        fullyFormulatedQuestion
+      // Extract indicator keys
+      const indicatorIds = comparisonData.indicators.map(
+        (indicator) => indicator.key
       );
 
-      // Call the API with the fully formulated question
-      const response = await askQuestion(fullyFormulatedQuestion, selectedLLM);
+      console.log("Analyzing comparison:", {
+        products: comparisonData.products.map((p) => p.name).join(", "),
+        indicators: comparisonData.indicators.map((i) => i.key).join(", "),
+        model: selectedLLM,
+      });
+
+      // Call the dedicated comparison analysis endpoint
+      const response = await analyzeComparison(
+        productIds,
+        indicatorIds,
+        selectedLLM
+      );
 
       setAiAnalysis({ loading: false, result: response.answer, error: null });
     } catch (error) {
       console.error("AI analysis failed:", error);
+
+      let errorMessage = "Analysis failed";
+      if (error.message) {
+        errorMessage = error.message.includes("503")
+          ? "The AI service is currently unavailable. Please try again later."
+          : error.message;
+      }
+
       setAiAnalysis({
         loading: false,
         result: "",
-        error: error.message || "Analysis failed",
+        error: errorMessage,
       });
 
       // If it's a service unavailable error, update the AI service status
-      if (error.isServiceUnavailable) {
+      if (error.isServiceUnavailable || error.status === 503) {
         setAiServiceStatus("unavailable");
       }
 

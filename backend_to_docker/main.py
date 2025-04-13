@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from llm_utils import query_llm
 import math
 from query_logger import QueryLogger
+from typing import List
 
 # Setup logging
 logging.basicConfig(
@@ -40,6 +41,11 @@ app.add_middleware(
 )
 
 # Request schemas
+class CompareAnalysisRequest(BaseModel):
+    productIds: List[str]
+    indicatorIds: List[str]
+    llmModel: str = "Llama-3.2-1B-Instruct"
+
 class QuestionRequest(BaseModel):
     question: str
     documentIds: list[str] = []
@@ -191,6 +197,87 @@ A:
     except Exception as e:
         logger.exception("Classification failed")
         return "unknown"
+
+def generate_comparison_prompt(document_ids, selected_indicators, max_extra=3):
+    """
+    Generate a comparison prompt using selected indicators and a few statistically meaningful extras.
+    """
+    # Get product info to use names instead of IDs
+    product_info = get_product_info(document_ids)
+    product_names = {str(product['id']): product['name'] for product in product_info}
+
+    # Get product indicators
+    product_indicators = get_combined_indicators(document_ids, selected_indicators, max_extra=max_extra)
+    
+    product_blocks = []
+    for pid in document_ids:
+        indicators = product_indicators.get(pid, {})
+        if not indicators:
+            continue
+        
+        # Use product name instead of ID
+        product_name = product_names.get(pid, f"Product {pid}")
+        lines = [f"Product: {product_name}", "Environmental Indicators:"]
+        
+        for key, data in indicators.items():
+            for module, value in data.get("modules", {}).items():
+                lines.append(f"- {key} ({data['unit']}): {module}: {value}")
+        
+        product_blocks.append("\n".join(lines))
+
+    # Collect all unique indicator keys
+    indicator_keys = set()
+    for indicators in product_indicators.values():
+        indicator_keys.update(indicators.keys())
+
+    # Fetch metadata using get_indicator_info
+    indicator_descriptions_list = get_indicator_info(list(indicator_keys))
+    indicator_descriptions = {item["key"]: item for item in indicator_descriptions_list}
+
+    indicator_info_lines = []
+    for key in sorted(indicator_keys):
+        meta = indicator_descriptions.get(key)
+        if meta:
+            name = meta.get("name", "")
+            desc = meta.get("short_description", "")
+            indicator_info_lines.append(f"- {key}: {name} – {desc}")
+
+    indicator_info_block = "\n".join(indicator_info_lines) if indicator_info_lines else "(No additional indicator information available.)"
+
+    module_reference = """
+Life Cycle Modules:
+- A1-A3: Product stage (raw material extraction, transport, manufacturing)
+- A4-A5: Construction stage
+- B1-B7: Use stage
+- C1-C4: End-of-life stage
+- D: Benefits and loads beyond system boundary
+    """
+
+    prompt = f"""
+You are a sustainability analyst specializing in Environmental Product Declarations (EPDs) for building materials.
+
+Your task is to compare the following products based on their environmental indicator values.
+
+CRITICAL COMPARISON RULES:
+1. Compare the values accross ALL life cycle modules.
+2. Compare ONLY values for the SAME indicator AND the SAME life cycle module.
+3. If a value is missing for one product, do NOT compare that indicator/module.
+4. Always specify the module when mentioning a value (e.g., "Product A has GWP-fossil in A1-A3: 150 kg CO₂-eq").
+5. Module-specific values cannot be generalized across the entire lifecycle.
+
+Products to compare:
+----------------------------------------
+{"\n\n".join(product_blocks)}
+----------------------------------------
+
+Indicator information:
+{indicator_info_block}
+
+{module_reference.strip()}
+
+Begin your analysis by identifying comparable indicators and modules:
+"""
+    return prompt
 
 # RAG helper functions
 def get_theory_chunks(embedding, limit=5):
@@ -377,6 +464,115 @@ def get_product_info(document_ids):
         logger.exception("Error retrieving product information")
         return []
 
+def get_combined_indicators(document_ids, selected_indicators, max_extra=3):
+    """
+    Returns indicators per product: all user-selected ones, plus a few statistically significant extras
+    if they are meaningful (non-zero, non-null) and not already selected.
+    """
+    if not document_ids:
+        return {}
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        placeholders = ', '.join(['%s'] * len(document_ids))
+        product_indicators = {pid: {} for pid in document_ids}
+
+        # Fetch user-selected indicators first
+        if selected_indicators:
+            cur.execute(f"""
+                SELECT l.process_id, l.indicator_key, l.unit, lm.module, lm.amount
+                FROM lcia_results l
+                JOIN lcia_moduleamounts lm ON l.lcia_id = lm.lcia_id
+                WHERE l.process_id IN ({placeholders})
+                AND l.indicator_key IN ({', '.join(['%s'] * len(selected_indicators))})
+            """, tuple(document_ids + selected_indicators))
+
+            for row in cur.fetchall():
+                pid, key, unit, module, amount = row
+                if amount is None:
+                    continue
+                pid = str(pid)
+                if key not in product_indicators[pid]:
+                    product_indicators[pid][key] = {"unit": unit, "modules": {}}
+                product_indicators[pid][key]["modules"][module] = amount
+
+        # Get category info for statistical comparison
+        cur.execute(f"""
+            SELECT process_id, category_level_1, category_level_2, category_level_3
+            FROM products
+            WHERE process_id IN ({placeholders})
+        """, tuple(document_ids))
+
+        product_categories = {}
+        for row in cur.fetchall():
+            pid, cat1, cat2, cat3 = row
+            product_categories[str(pid)] = (cat1, cat2, cat3)
+
+        # Fetch all indicators for significance testing
+        cur.execute(f"""
+            SELECT l.process_id, l.indicator_key, l.unit, lm.module, lm.amount
+            FROM lcia_results l
+            JOIN lcia_moduleamounts lm ON l.lcia_id = lm.lcia_id
+            WHERE l.process_id IN ({placeholders})
+        """, tuple(document_ids))
+
+        full_data = {}
+        for row in cur.fetchall():
+            pid, key, unit, module, amount = row
+            pid = str(pid)
+            if amount is None or amount == 0:
+                continue
+            if pid not in full_data:
+                full_data[pid] = {}
+            if key not in full_data[pid]:
+                full_data[pid][key] = {"unit": unit, "modules": {}}
+            full_data[pid][key]["modules"][module] = amount
+
+        # Apply significance test (z-score logic)
+        for pid, indicators in full_data.items():
+            if pid not in product_categories:
+                continue
+            cat1, cat2, cat3 = product_categories[pid]
+            count = 0
+            for key, data in indicators.items():
+                if key in selected_indicators or key in product_indicators[pid]:
+                    continue
+                for module, val in data["modules"].items():
+                    cur.execute("""
+                        SELECT mean, std_dev, min, max
+                        FROM indicator_statistics
+                        WHERE indicator_key = %s AND module = %s
+                        AND category_level_1 = %s AND category_level_2 = %s AND category_level_3 = %s
+                    """, (key, module, cat1, cat2, cat3))
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+                    mean, std_dev, min_val, max_val = row
+                    if mean is None or std_dev is None or std_dev == 0:
+                        continue
+                    z = abs((val - mean) / std_dev)
+                    if z < 1.0:
+                        continue
+
+                    # Keep only if we're not over budget
+                    if key not in product_indicators[pid]:
+                        product_indicators[pid][key] = {"unit": data["unit"], "modules": {}}
+                    product_indicators[pid][key]["modules"][module] = val
+                    count += 1
+                    if count >= max_extra:
+                        break
+
+        return product_indicators
+
+    except Exception as e:
+        logger.exception("Error in get_combined_indicators")
+        return {}
+    finally:
+        cur.close()
+        conn.close()
+
 def get_product_indicators(document_ids, indicator_ids):
     """
     Retrieves product-specific indicator values from LCIA results and exchanges.
@@ -467,7 +663,7 @@ def get_product_indicators(document_ids, indicator_ids):
         logger.exception("Error retrieving product-specific indicator values")
         return {}
     
-def get_statistically_important_indicators(document_ids, max_indicators=8):
+def get_statistically_important_indicators(document_ids, max_indicators=2):
     """
     Retrieves only statistically significant indicator values for specified products.
     Selects indicators that are notably high or low compared to category averages.
@@ -697,7 +893,7 @@ def build_specialized_prompt(category, question, chunks_context, product_info=No
         for p in product_info:
             product_id = p['id']
             product_detail = [
-                f"Product {product_id}: {p['name']}",
+                f"Product: {p['name']}",
                 f"  Category: {p['category_level_1']}/{p['category_level_2']}/{p['category_level_3']}",
                 f"  Description: {p['description']}",
             ]
@@ -942,6 +1138,91 @@ Answer:"""
 
     return prompt_templates.get(category, default_template)
 
+@app.post("/compareAnalysis")
+async def compare_analysis(data: CompareAnalysisRequest):
+    """
+    Specialized endpoint for product comparison analysis focusing only on selected indicators
+    """
+    product_ids = data.productIds
+    indicator_ids = data.indicatorIds
+    llm_model = data.llmModel
+    
+    # Log the request
+    logger.info(f"[INFO] Compare analysis request for products: {product_ids}")
+    logger.info(f"[INFO] Compare analysis indicators: {indicator_ids}")
+    logger.info(f"[INFO] Selected LLM: {llm_model}")
+    
+    # Create a log object
+    analysis_log = {
+        "product_ids": product_ids,
+        "indicator_ids": indicator_ids,
+        "llm_model": llm_model,
+        "prompt": None,
+        "response": None,
+        "error": None
+    }
+    
+    # Input validation
+    if not product_ids or len(product_ids) < 1:
+        error_msg = "At least one product must be selected for analysis."
+        analysis_log["error"] = error_msg
+        query_logger.log_query(analysis_log)
+        return JSONResponse(
+            status_code=400,
+            content={"answer": error_msg}
+        )
+        
+    if not indicator_ids:
+        error_msg = "At least one indicator must be selected for analysis."
+        analysis_log["error"] = error_msg
+        query_logger.log_query(analysis_log)
+        return JSONResponse(
+            status_code=400,
+            content={"answer": error_msg}
+        )
+    
+    try:
+        # Get product information
+        product_info = get_product_info(product_ids)
+        if not product_info:
+            error_msg = "Could not retrieve product information."
+            analysis_log["error"] = error_msg
+            query_logger.log_query(analysis_log)
+            return JSONResponse(
+                status_code=404,
+                content={"answer": error_msg}
+            )
+        
+        # Get indicator information
+        indicator_info = get_indicator_info(indicator_ids)
+        
+        # Get product-specific indicator values (using your statistical filtering)
+        product_indicators = get_statistically_important_indicators(product_ids, max_indicators=2)
+        
+        # Generate a focused comparison prompt
+        prompt = generate_comparison_prompt(product_ids, indicator_ids, max_extra=2)
+        analysis_log["prompt"] = prompt
+        
+        # Call the LLM
+        answer = query_llm(prompt, model_name=llm_model)
+        analysis_log["response"] = answer
+        
+        # Log the successful query
+        log_path = query_logger.log_query(analysis_log)
+        logger.info(f"Comparison analysis log saved to {log_path}")
+        
+        return JSONResponse(content={"answer": answer})
+        
+    except Exception as e:
+        error_msg = f"Error during comparison analysis: {str(e)}"
+        analysis_log["error"] = error_msg
+        query_logger.log_query(analysis_log)
+        logger.exception(error_msg)
+        return JSONResponse(
+            status_code=500,
+            content={"answer": "An error occurred during comparison analysis."}
+        )
+    
 @app.post("/askrag")
 async def ask_question(data: QuestionRequest):
     """RAG-enhanced question answering endpoint with detailed logging"""

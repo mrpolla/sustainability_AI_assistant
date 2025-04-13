@@ -238,6 +238,40 @@ const apiRequest = async (endpoint, data, options = {}) => {
   }
 };
 
+export const analyzeComparison = async (productIds, indicatorIds, llmModel) => {
+  try {
+    console.log("Sending comparison analysis request with:", {
+      productIds,
+      indicatorIds,
+      llmModel,
+    });
+
+    const response = await fetch(`http://localhost:8001/compareAnalysis`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        productIds,
+        indicatorIds,
+        llmModel,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = new Error(`Server responded with ${response.status}`);
+      error.status = response.status;
+      error.isServiceUnavailable = response.status === 503;
+      throw error;
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("API error in analyzeComparison:", error);
+    throw error;
+  }
+};
+
 /**
  * Send a simple question to the backend API (without RAG)
  * @param {string} question - The fully formulated question to send
