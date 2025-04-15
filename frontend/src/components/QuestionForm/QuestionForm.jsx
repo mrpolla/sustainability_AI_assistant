@@ -30,6 +30,11 @@ const QuestionForm = ({
           resize: "vertical",
           backgroundColor: "#1e1e1e",
           color: "#e0e0e0",
+          fontFamily:
+            "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
+          fontSize: "1rem",
+          lineHeight: "1.5",
+          letterSpacing: "0.015em",
         }}
       />
       {error && (
@@ -38,6 +43,8 @@ const QuestionForm = ({
             color: "#d32f2f",
             fontSize: "0.85rem",
             marginTop: "0.3rem",
+            fontFamily:
+              "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
           }}
         >
           {error}
@@ -51,7 +58,16 @@ const QuestionForm = ({
           alignItems: "center",
         }}
       >
-        <small style={{ color: "#666" }}>Press Ctrl+Enter to submit</small>
+        <small
+          style={{
+            color: "#666",
+            fontFamily:
+              "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
+            fontSize: "0.8rem",
+          }}
+        >
+          Press Ctrl+Enter to submit
+        </small>
         <LoadingButton
           onClick={handleSubmit}
           loading={loading}
