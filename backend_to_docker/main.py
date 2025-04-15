@@ -271,13 +271,6 @@ You are a sustainability analyst specializing in Environmental Product Declarati
 
 Your task is to compare the following products based on their environmental indicator values, with a focus on the user-selected indicators.
 
-CRITICAL COMPARISON RULES:
-1. Compare the the indicators accross ALL life cycle modules.
-2. Compare ONLY values for the SAME indicator AND the SAME life cycle module.
-3. If a value is missing for one product, do NOT compare that indicator/module.
-4. Always specify the module when mentioning a value.
-5. Compare how each indicator's values fit within the statistical range (mean, min, max) for its category and module.
-
 USER-SELECTED INDICATORS are the primary focus of your comparison.
 
 Products to compare:
@@ -292,7 +285,15 @@ Indicator information:
 
 {module_reference.strip()}
 
-Begin your analysis:
+Write the answer as a well-structured, paragraph-style analysis that groups observations by life cycle stage:
+- Start with a brief summary of what the comparison covers.
+- Clearly name a winner. Use this format: Winner: [Product Name] – [short reason, max 12 words].
+- For each stage A1-A3 (Product), A4-A5 (Construction), B1-B7 (Use), C1-C4 (End-of-life), D (Beyond system boundary), write 1 sentence in bullet points highlighting differences or patterns between the products, if valid comparisons exist.
+- Highlight any statistically high or low values where appropriate, but avoid discussing values that are average or unremarkable.
+- Clearly note if a comparison is not possible due to missing data.
+- Finish with a short summary (1 to 2 sentences) also in one bullet point with key takeaways or insights. Consider also product information provided.
+
+Use professional but clear and concise language.
 """
     return prompt
 
@@ -894,7 +895,6 @@ def get_statistically_important_indicators(document_ids, max_indicators=2):
         return {}
     
 # Prompt generation
-# Modify the build_specialized_prompt function to include the module integrity warning
 def build_specialized_prompt(category, question, chunks_context, product_info=None, indicator_info=None, product_indicators=None):
     """
     Builds a specialized prompt based on question category and available context.
@@ -924,7 +924,7 @@ def build_specialized_prompt(category, question, chunks_context, product_info=No
                 and len(p.get('short_description')) < 200):
                 product_detail.append(f"  Summary: {p['short_description']}")
             
-            # Add product-specific indicator values if available
+            # Add ALL indicator values for selected indicators
             if product_indicators and product_id in product_indicators:
                 product_indicator_values = []
                 for indicator_key, data in product_indicators[product_id].items():
@@ -938,9 +938,6 @@ def build_specialized_prompt(category, question, chunks_context, product_info=No
                     # Format the module values
                     module_values = []
                     
-                    # Check if we have significance data
-                    has_significance = "significance" in data
-                    
                     for module, value in data.get('modules', {}).items():
                         if value is not None:
                             # Format the value with appropriate precision
@@ -951,15 +948,7 @@ def build_specialized_prompt(category, question, chunks_context, product_info=No
                                     formatted_value = f"{value:.3f}"
                             else:
                                 formatted_value = str(value)
-                                
-                            # Add significance marker if available
-                            if has_significance and module in data.get('significance', {}):
-                                sig = data['significance'][module]
-                                if sig.get('is_high') and sig.get('z_score', 0) > 1.5:
-                                    formatted_value += " (high)"
-                                elif sig.get('is_low') and sig.get('z_score', 0) > 1.5:
-                                    formatted_value += " (low)"
-                                    
+                            
                             module_values.append(f"{module}: {formatted_value}")
                     
                     if module_values:
@@ -969,7 +958,7 @@ def build_specialized_prompt(category, question, chunks_context, product_info=No
                         )
                 
                 if product_indicator_values:
-                    product_detail.append("  Notable Indicator Values:")
+                    product_detail.append("  All Indicator Values:")
                     product_detail.extend(product_indicator_values)
             
             product_details.append("\n".join(product_detail))
@@ -991,6 +980,26 @@ def build_specialized_prompt(category, question, chunks_context, product_info=No
             indicator_details.append("\n".join(indicator_detail))
         
         indicator_context = f"Selected Indicators:\n{'-' * 30}\n" + "\n\n".join(indicator_details) + f"\n{'-' * 30}\n\n"
+    
+    # Add standard indicator reference guide
+    indicator_reference = """
+Standard Indicator Reference Guide:
+- ADPE: Abiotic depletion potential – elements – Scarcity-driven depletion of mineral and metal resources.
+- ADPF: Abiotic depletion potential – fossil fuels – Depletion of fossil energy carriers like oil, gas, coal.
+- AP: Acidification potential – Contribution to acid rain formation via SO₂, NOₓ, NH₃.
+- EP-freshwater: Eutrophication potential – freshwater – Algal bloom risk in freshwater due to excess phosphorus.
+- EP-marine: Eutrophication potential – marine – Nutrient enrichment in oceans and coastal ecosystems.
+- EP-terrestrial: Eutrophication potential – terrestrial – Soil nutrient saturation potential causing biodiversity loss.
+- ETP-fw: Freshwater ecotoxicity potential – Toxic stress on aquatic organisms from pollutants.
+- GWP-biogenic: Global Warming Potential (biogenic) – CO₂-equivalent emissions and removals from biomass.
+- GWP-fossil: Global Warming Potential (fossil) – CO₂-equivalent emissions from fossil-based sources.
+- GWP-luluc: Global Warming Potential (land use and land use change) – CO₂-equivalent emissions from changes in land cover.
+- ODP: Ozone depletion potential – Potential for substances to destroy ozone in the stratosphere.
+- PM: Particulate matter formation – Inhalable fine particles affecting respiratory health.
+- POCP: Photochemical ozone creation potential – Ground-level ozone formation or smog potential.
+- SQP: Soil quality potential – Potential degradation of soil functionality and ecosystem services.
+- WDP: Water deprivation potential – Water use weighted by scarcity in specific regions.
+"""
     
     # Common warning about not inventing data
     no_invention_warning = """IMPORTANT: Only use numerical values explicitly provided above. Do not make up or infer any values not clearly stated in the context. If data is missing, acknowledge this limitation."""
@@ -1019,8 +1028,9 @@ REFERENCE - Life Cycle Modules:
     # Determine if this is a product-related category that needs the module warnings
     product_related = category in ["comparison_question", "hybrid_theory_comparison", "product_followup"]
     
-    # Product-related templates get the additional warnings
-    product_warnings = f"{module_integrity_warning}\n{module_explanation}" if product_related else ""
+    # # Product-related templates get the additional warnings
+    product_warnings = ""
+    # product_warnings = f"{module_integrity_warning}\n{module_explanation}" if product_related else ""
     
     # Prompt templates by category
     prompt_templates = {
@@ -1043,6 +1053,7 @@ Question: {question}
 
 {product_context}
 {indicator_context}
+{indicator_reference}
 Context:
 {base_context}
 
@@ -1062,6 +1073,7 @@ Question: {question}
 
 {product_context}
 {indicator_context}
+{indicator_reference}
 Context:
 {base_context}
 
@@ -1093,6 +1105,7 @@ Answer:""",
 Question: {question}
 
 {indicator_context}
+{indicator_reference}
 Context:
 {base_context}
 
@@ -1117,24 +1130,31 @@ Answer:""",
 
         "product_followup": f"""You are a product sustainability analyst specializing in building materials.
 
-Question: {question}
+You will be given product information including:
+- Metadata (e.g. name, description, category)
+- Reference theory (if available)
+
+Your task is to answer the user's follow-up question about the product(s) using ONLY the relevant sources of information.
 
 {product_context}
-{indicator_context}
-Context:
+Context (including theoretical information):
 {base_context}
 
 {no_invention_warning}
 
 {product_warnings}
 
-Note: Only statistically significant indicators (those that are notably higher or lower than category averages) are shown for each product.
+IMPORTANT LOGIC FOR ANSWERING CIRCULARITY OR SUSTAINABILITY QUESTIONS:
+- If the question is about circularity or general sustainability, infer the answer from the product's description, technical info, and theory context.
+- When evaluating circularity, consider signs of circular design: use of recycled content, modularity, ease of disassembly, end-of-life reuse, and durability.
 
 When discussing the products:
-1. ONLY mention numerical values that are EXPLICITLY shown in the product data above
-2. ALWAYS specify which module a value belongs to when citing any indicator value
-3. NEVER refer to a single module's value as representing the entire indicator
+1. If the question is about **product composition, category, or use**, base your answer on the product metadata.
+2. If the question relates to sustainability **theory or concepts**, draw upon the theoretical information in the context to explain relevant concepts.
+3. ONLY mention numerical values that are EXPLICITLY shown in the product data above
 4. If asked about a specific aspect not covered in the data, state clearly that this information isn't provided
+
+Question: {question}
 
 Answer:"""
     }
@@ -1145,7 +1165,6 @@ Answer:"""
 Question: {question}
 
 {product_context if product_context else ""}
-{indicator_context if indicator_context else ""}
 Context:
 {base_context}
 
@@ -1585,13 +1604,20 @@ async def ask_question(data: QuestionRequest):
                 product_info = get_product_info(document_ids)
                 query_log["product_info"] = product_info
                 
-                # Get statistically significant indicators (outliers compared to category averages)
-                product_indicators = get_statistically_important_indicators(document_ids, max_indicators=8)
+                # Use same product indicator approach as in generate_comparison_prompt
+                # Get product-specific indicator values for all indicators
+                product_indicators = get_product_indicators(document_ids, indicator_ids if indicator_ids else [])
                 query_log["product_indicators"] = product_indicators
                 
-                # Get indicator counts for logging
+                # If we have selected indicators, get their detailed info
+                if indicator_ids:
+                    indicator_descriptions_list = get_indicator_info(indicator_ids)
+                    indicator_info = indicator_descriptions_list
+                    query_log["indicator_info"] = indicator_info
+                
+                # Log the indicator counts
                 indicator_counts = {product_id: len(indicators) for product_id, indicators in product_indicators.items()}
-                logger.info(f"Retrieved statistical outlier indicators for {len(product_indicators)} products")
+                logger.info(f"Retrieved indicators for {len(product_indicators)} products")
                 logger.info(f"Indicator counts per product: {indicator_counts}")
             
             # Still get specific indicator info if selected

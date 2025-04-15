@@ -1,6 +1,5 @@
 import React from "react";
 import CheckableList from "../../components/CheckableList";
-
 /**
  * Component for product selection functionality
  */
@@ -27,25 +26,29 @@ const ProductSelection = ({
           </span>
         )}
       </h3>
-      <CheckableList
-        items={items}
-        selectedItems={selectedItems}
-        onItemToggle={onItemToggle}
-        disabled={disabled}
-      />
-      {selectedItems.length > 0 && (
-        <div
-          style={{
-            fontSize: "0.9rem",
-            color: "#999",
-            marginTop: "-1rem",
-            marginBottom: "1rem",
-          }}
-        >
-          {selectedItems.length} product
-          {selectedItems.length !== 1 ? "s" : ""} selected
-        </div>
-      )}
+
+      <div style={{ position: "relative" }}>
+        <CheckableList
+          items={items}
+          selectedItems={selectedItems}
+          onItemToggle={onItemToggle}
+          disabled={disabled}
+        />
+
+        {selectedItems.length > 0 && (
+          <div
+            style={{
+              fontSize: "0.9rem",
+              color: "#999",
+              marginTop: "0.5rem",
+              marginBottom: "1rem",
+            }}
+          >
+            {selectedItems.length} product
+            {selectedItems.length !== 1 ? "s" : ""} selected
+          </div>
+        )}
+      </div>
     </div>
   );
 };

@@ -83,17 +83,12 @@ ollama run mistral
 
 
 
-- extra indicators: lcia (IRP, GWP, EP) and exchanges(SF)
+Future:
+- funding: EU
+- partnership: mentor has talked to company already
 
-Types of questions:
-Compare 2 or more products on indicators
-Find out alternative products for same use case
-Which product types are good for my building design 
-- find product for my use case
-Indicators that are important
-- how to decide if no clear product is better
-How to use the product in a sustainable way?
-How circular is this product?
+- get information from more databases
+- improve embedding
 
 
 
