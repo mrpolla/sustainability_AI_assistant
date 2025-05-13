@@ -10,7 +10,7 @@ import traceback
 from dotenv import load_dotenv
 from llm_utils import query_llm
 import math
-from query_logger import QueryLogger
+from scripts.query_logger import QueryLogger
 from typing import List
 
 # Setup logging
